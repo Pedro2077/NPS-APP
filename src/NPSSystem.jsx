@@ -1,30 +1,12 @@
-import React, { useState, useMemo } from 'react';
-import {
-  Upload,
-  FileText,
-  BarChart3,
-  TrendingUp,
-  Users,
-  AlertCircle,
-  Award,
-  Target,
-  Download,
-  Lightbulb,
-  Activity,
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Upload, FileText, BarChart3, TrendingUp, Users, AlertCircle, 
+  Award, Target, Download, Lightbulb, Activity, CheckCircle2,
+  RefreshCw, Eye, EyeOff, Filter, ArrowUp
 } from 'lucide-react';
-import {
-  PieChart,
-  Pie,
-  Cell,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  LineChart,
-  Line,
+import { 
+  PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, 
+  CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line 
 } from 'recharts';
 
 const NPSSystem = () => {
@@ -34,6 +16,23 @@ const NPSSystem = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadHistory, setUploadHistory] = useState([]);
   const [selectedPeriod, setSelectedPeriod] = useState('all');
+  const [showDataTable, setShowDataTable] = useState(false);
+  const [filterPlan, setFilterPlan] = useState('all');
+  const [error, setError] = useState(null);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowScrollTop(window.pageYOffset > 300);
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   // Cores por plano
   const planColors = {
@@ -42,71 +41,140 @@ const NPSSystem = () => {
     PRO: { bg: 'bg-purple-100', text: 'text-purple-800', border: 'border-purple-300', chart: '#8B5CF6' },
   };
 
-  // Simulação de dados de histórico por plano (exemplo)
-  const mockHistoryByPlan = useMemo(
-    () => [
-      { date: '2024-12-25', FREE: 22, LITE: 40, PRO: 59 },
-      { date: '2025-01-01', FREE: 28, LITE: 38, PRO: 62 },
-      { date: '2025-01-08', FREE: 30, LITE: 42, PRO: 68 },
-      { date: '2025-01-15', FREE: 25, LITE: 45, PRO: 65 },
-    ],
-    []
-  );
+  // Simulação de dados de histórico por plano
+  const mockHistoryByPlan = useMemo(() => [
+    { date: '2024-12-25', FREE: 22, LITE: 40, PRO: 59 },
+    { date: '2025-01-01', FREE: 28, LITE: 38, PRO: 62 },
+    { date: '2025-01-08', FREE: 30, LITE: 42, PRO: 68 },
+    { date: '2025-01-15', FREE: 25, LITE: 45, PRO: 65 },
+    { date: '2025-01-22', FREE: 32, LITE: 47, PRO: 70 },
+    { date: '2025-01-29', FREE: 35, LITE: 50, PRO: 72 },
+  ], []);
 
-  // ---- Upload & Parse CSV ----
-  const processCSV = (file) => {
-    if (!file) return;
-
-    setIsProcessing(true);
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      const text = e.target.result;
-      const normalized = text.replace(/\r/g, ''); // normaliza CRLF
-      const lines = normalized.split('\n').filter((line) => line.trim());
-      if (lines.length === 0) {
-        setIsProcessing(false);
-        return;
-      }
-
-      const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
-
-      const data = lines
-        .slice(1)
-        .map((line) => {
-          const values = line.split(',');
-          const obj = {};
-          headers.forEach((header, index) => {
-            obj[header] = values[index]?.trim();
-          });
-          return obj;
-        })
-        .filter(
-          (row) =>
-            row.nota && !isNaN(Number(row.nota)) && row.plano && Number(row.nota) >= 0 && Number(row.nota) <= 10
-        );
-
-      setCsvData(data);
-      calculateNPS(data);
-      calculateNPSByPlan(data);
-      setIsProcessing(false);
-    };
-
-    reader.readAsText(file);
+  // Reset function
+  const resetData = () => {
+    setCsvData([]);
+    setNpsResults(null);
+    setNpsResultsByPlan({});
+    setError(null);
+    setShowDataTable(false);
+    setFilterPlan('all');
   };
 
-  // ---- Cálculos NPS ----
+  // Upload & Parse CSV with improved validation
+  const processCSV = (file) => {
+    if (!file) return;
+    
+    // Verificar tipo de arquivo
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setError('Por favor, selecione apenas arquivos CSV.');
+      return;
+    }
+
+    // Verificar tamanho do arquivo (máximo 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Arquivo muito grande. Limite máximo: 5MB.');
+      return;
+    }
+    
+    setIsProcessing(true);
+    setError(null);
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target.result;
+        const normalized = text.replace(/\r/g, '');
+        const lines = normalized.split('\n').filter(line => line.trim());
+        
+        if (lines.length === 0) {
+          throw new Error('Arquivo CSV vazio');
+        }
+
+        const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+        const requiredHeaders = ['nota', 'plano'];
+        const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
+        
+        if (missingHeaders.length > 0) {
+          throw new Error(`Campos obrigatórios ausentes: ${missingHeaders.join(', ')}`);
+        }
+
+        const data = lines.slice(1)
+          .map((line, index) => {
+            const values = line.split(',');
+            const obj = { lineNumber: index + 2 }; // Para debug
+            headers.forEach((header, idx) => {
+              obj[header] = values[idx]?.trim();
+            });
+            return obj;
+          })
+          .filter(row => {
+            const nota = Number(row.nota);
+            return row.nota && !isNaN(nota) && row.plano && 
+                   nota >= 0 && nota <= 10;
+          });
+
+        if (data.length === 0) {
+          throw new Error('Nenhum registro válido encontrado no arquivo');
+        }
+
+        // Verificar se há planos válidos
+        const validPlans = ['FREE', 'LITE', 'PRO'];
+        const hasValidPlans = data.some(row => 
+          validPlans.includes(row.plano?.toUpperCase())
+        );
+
+        if (!hasValidPlans) {
+          throw new Error('Nenhum plano válido encontrado. Use: FREE, LITE ou PRO');
+        }
+
+        setCsvData(data);
+        calculateNPS(data);
+        calculateNPSByPlan(data);
+        setShowDataTable(true);
+        
+        // Adicionar ao histórico
+        setUploadHistory(prev => [{
+          date: new Date().toISOString().split('T')[0],
+          time: new Date().toLocaleTimeString('pt-BR'),
+          fileName: file.name,
+          totalRecords: data.length,
+          id: Date.now(),
+        }, ...prev.slice(0, 4)]);
+        
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+    
+    reader.onerror = () => {
+      setError('Erro ao ler o arquivo');
+      setIsProcessing(false);
+    };
+    
+    reader.readAsText(file, 'UTF-8');
+  };
+
+  // Cálculos NPS 
   const calculateNPS = (data) => {
-    const scores = data.map((row) => Number(row.nota));
+    const scores = data.map(row => Number(row.nota));
     const total = scores.length;
-    const promoters = scores.filter((score) => score >= 9).length;
-    const passives = scores.filter((score) => score >= 7 && score <= 8).length;
-    const detractors = scores.filter((score) => score <= 6).length;
+    const promoters = scores.filter(score => score >= 9).length;
+    const passives = scores.filter(score => score >= 7 && score <= 8).length;
+    const detractors = scores.filter(score => score <= 6).length;
 
     const promoterPercentage = (promoters / total) * 100;
     const detractorPercentage = (detractors / total) * 100;
     const nps = Math.round(promoterPercentage - detractorPercentage);
     const averageScore = total > 0 ? scores.reduce((a, b) => a + b, 0) / total : 0;
+
+    // Calcular mediana
+    const sortedScores = [...scores].sort((a, b) => a - b);
+    const median = total % 2 === 0
+      ? (sortedScores[total / 2 - 1] + sortedScores[total / 2]) / 2
+      : sortedScores[Math.floor(total / 2)];
 
     const results = {
       nps,
@@ -118,36 +186,25 @@ const NPSSystem = () => {
       passivePercentage: Math.round((passives / total) * 100),
       detractorPercentage: Math.round(detractorPercentage),
       averageScore: averageScore.toFixed(1),
+      median: median.toFixed(1),
     };
 
     setNpsResults(results);
-
-    // Histórico de uploads (salva o resumo do upload atual)
-    setUploadHistory((prev) => [
-      {
-        date: new Date().toISOString().split('T')[0],
-        nps,
-        total,
-        id: Date.now(),
-      },
-      ...prev,
-    ]);
   };
 
   const calculateNPSByPlan = (data) => {
     const plans = ['FREE', 'LITE', 'PRO'];
     const resultsByPlan = {};
 
-    plans.forEach((plan) => {
-      const planData = data.filter((row) => row.plano?.toUpperCase() === plan);
-      const scores = planData.map((row) => Number(row.nota));
+    plans.forEach(plan => {
+      const planData = data.filter(row => row.plano?.toUpperCase() === plan);
+      const scores = planData.map(row => Number(row.nota));
       const total = scores.length;
 
       if (total > 0) {
-        const promoters = scores.filter((score) => score >= 9).length;
-        const passives = scores.filter((score) => score >= 7 && score <= 8).length;
-        const detractors = scores.filter((score) => score <= 6).length;
-
+        const promoters = scores.filter(score => score >= 9).length;
+        const passives = scores.filter(score => score >= 7 && score <= 8).length;
+        const detractors = scores.filter(score => score <= 6).length;
         const promoterPercentage = (promoters / total) * 100;
         const detractorPercentage = (detractors / total) * 100;
         const nps = Math.round(promoterPercentage - detractorPercentage);
@@ -170,34 +227,40 @@ const NPSSystem = () => {
     setNpsResultsByPlan(resultsByPlan);
   };
 
-  // ---- Derivados/Métricas ----
+  // Distribuição de notas melhorada
   const scoreDistributionData = useMemo(() => {
     if (!csvData.length) return [];
+    
     const distribution = {};
     for (let i = 0; i <= 10; i++) distribution[i] = 0;
-    csvData.forEach((row) => {
+    
+    csvData.forEach(row => {
       const score = Number(row.nota);
       if (!Number.isNaN(score)) distribution[score]++;
     });
+
     return Object.entries(distribution).map(([score, count]) => ({
       score: Number(score),
       count,
       percentage: ((count / csvData.length) * 100).toFixed(1),
+      category: Number(score) >= 9 ? 'Promotor' : Number(score) >= 7 ? 'Neutro' : 'Detrator'
     }));
   }, [csvData]);
 
+  // Percentuais por plano
   const planPercentages = useMemo(() => {
     if (!csvData.length) return {};
+    
     const validPlans = ['FREE', 'LITE', 'PRO'];
     const planCounts = { FREE: 0, LITE: 0, PRO: 0 };
-
-    csvData.forEach((row) => {
+    
+    csvData.forEach(row => {
       const plan = row.plano?.toUpperCase();
       if (validPlans.includes(plan)) planCounts[plan]++;
     });
 
     const percentages = {};
-    validPlans.forEach((plan) => {
+    validPlans.forEach(plan => {
       const count = planCounts[plan];
       if (count > 0) {
         percentages[plan] = {
@@ -210,57 +273,84 @@ const NPSSystem = () => {
     return percentages;
   }, [csvData]);
 
+  // Insights 
   const insights = useMemo(() => {
     if (!npsResults || Object.keys(npsResultsByPlan).length === 0) return [];
+
     const all = Object.entries(npsResultsByPlan);
-    const bestPlan = all.reduce((a, b) => (a[1].nps > b[1].nps ? a : b));
-    const worstPlan = all.reduce((a, b) => (a[1].nps < b[1].nps ? a : b));
+    if (all.length === 0) return [];
 
-    const out = [
-      {
-        type: 'success',
-        icon: '🚀',
-        message: `O plano ${bestPlan[0]} teve o melhor NPS (${bestPlan[1].nps})`,
-      },
-    ];
+    const bestPlan = all.reduce((a, b) => a[1].nps > b[1].nps ? a : b);
+    const worstPlan = all.reduce((a, b) => a[1].nps < b[1].nps ? a : b);
 
+    const insights = [];
+
+    // Insight sobre melhor plano
+    insights.push({
+      type: 'success',
+      icon: '🚀',
+      message: `Plano ${bestPlan[0]} lidera com NPS ${bestPlan[1].nps} (${bestPlan[1].total} usuários)`,
+    });
+
+    // Insight sobre plano que precisa atenção
     if (worstPlan[1].nps < 30) {
-      out.push({
+      insights.push({
         type: 'warning',
         icon: '⚠️',
-        message: `O plano ${worstPlan[0]} precisa de atenção (NPS ${worstPlan[1].nps})`,
+        message: `Plano ${worstPlan[0]} precisa atenção: NPS ${worstPlan[1].nps}`,
       });
     }
 
+    // Insight sobre detratores
     if (npsResults.detractorPercentage > 30) {
-      out.push({
+      insights.push({
         type: 'error',
         icon: '🔴',
-        message: `Alto percentual de detratores (${npsResults.detractorPercentage}%) - requer ação imediata`,
+        message: `${npsResults.detractorPercentage}% de detratores - ação imediata necessária`,
       });
     }
 
+    // Insight sobre promotores
     if (npsResults.promoterPercentage > 60) {
-      out.push({
+      insights.push({
         type: 'success',
         icon: '✨',
-        message: `Excelente base de promotores (${npsResults.promoterPercentage}%) - oportunidade de crescimento orgânico`,
+        message: `${npsResults.promoterPercentage}% promotores - excelente para crescimento orgânico`,
       });
     }
 
-    return out;
+    // Insight sobre média
+    if (Number(npsResults.averageScore) > 8.5) {
+      insights.push({
+        type: 'success',
+        icon: '⭐',
+        message: `Média excelente: ${npsResults.averageScore}/10`,
+      });
+    }
+
+    return insights;
   }, [npsResults, npsResultsByPlan]);
 
-  // ---- Export CSV ----
   const exportData = () => {
     if (!csvData.length) return;
-    const headers = ['data', 'cliente', 'usuario', 'nota', 'comentario', 'plano', 'categoria'];
+
+    const headers = ['data', 'cliente', 'usuario', 'nota', 'comentario', 'plano', 'categoria', 'segmento_nps'];
     const csvContent = [
       headers.join(','),
-      ...csvData.map((row) => {
+      ...csvData.map(row => {
         const nota = Number(row.nota);
         const categoria = nota >= 9 ? 'Promotor' : nota >= 7 ? 'Neutro' : 'Detrator';
-        return [row.data || '', row.cliente || '', row.usuario || '', row.nota || '', row.comentario || '', row.plano || '', categoria].join(',');
+        const segmento = nota >= 9 ? 'Promotores (9-10)' : nota >= 7 ? 'Neutros (7-8)' : 'Detratores (0-6)';
+        return [
+          row.data || '',
+          row.cliente || '',
+          row.usuario || '',
+          row.nota || '',
+          `"${row.comentario || ''}"`, 
+          row.plano || '',
+          categoria,
+          segmento
+        ].join(',');
       }),
     ].join('\n');
 
@@ -268,13 +358,14 @@ const NPSSystem = () => {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `nps_analysis_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `nps_analise_completa_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  // ---- Helpers de UI ----
+  // Helpers de UI
   const getNPSColor = (nps) => {
     if (nps >= 70) return 'text-green-600';
     if (nps >= 50) return 'text-yellow-600';
@@ -296,37 +387,36 @@ const NPSSystem = () => {
     return 'Crítico';
   };
 
-  // ---- Dados para gráficos ----
-  const pieData = npsResults
-    ? [
-        { name: 'Promotores', value: npsResults.promoters, color: '#10B981' },
-        { name: 'Neutros', value: npsResults.passives, color: '#F59E0B' },
-        { name: 'Detratores', value: npsResults.detractors, color: '#EF4444' },
-      ]
-    : [];
+  // Dados para gráficos
+  const pieData = npsResults ? [
+    { name: 'Promotores', value: npsResults.promoters, color: '#10B981' },
+    { name: 'Neutros', value: npsResults.passives, color: '#F59E0B' },
+    { name: 'Detratores', value: npsResults.detractors, color: '#EF4444' },
+  ] : [];
 
-  const planDistributionData = Object.keys(npsResultsByPlan).map((plan) => ({
+  const planDistributionData = Object.keys(npsResultsByPlan).map(plan => ({
     plano: plan,
     usuarios: npsResultsByPlan[plan].total,
     nps: npsResultsByPlan[plan].nps,
     color: planColors[plan].chart,
   }));
 
-  const planNPSData = Object.keys(npsResultsByPlan).map((plan) => ({
+  const planNPSData = Object.keys(npsResultsByPlan).map(plan => ({
     plano: plan,
     nps: npsResultsByPlan[plan].nps,
     fill: planColors[plan].chart,
   }));
 
-  // Tooltip customizada para distribuição de notas
+  
   const ScoreTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
-      const { count, percentage } = payload[0].payload;
+      const data = payload[0].payload;
       return (
-        <div className="bg-white p-3 rounded-xl shadow border text-gray-700 text-sm">
-          <div className="font-semibold">Nota {label}</div>
-          <div>
-            {count} respostas ({percentage}%)
+        <div className="bg-white p-4 rounded-xl shadow-lg border-2 border-gray-200 text-gray-700">
+          <div className="font-bold text-lg mb-2">Nota {label}</div>
+          <div className="space-y-1">
+            <div>{data.count} respostas ({data.percentage}%)</div>
+            <div className="text-sm text-gray-500">Categoria: {data.category}</div>
           </div>
         </div>
       );
@@ -334,103 +424,148 @@ const NPSSystem = () => {
     return null;
   };
 
+  // Filtrar dados da tabela
+  const filteredTableData = useMemo(() => {
+    if (filterPlan === 'all') return csvData;
+    return csvData.filter(row => row.plano?.toUpperCase() === filterPlan);
+  }, [csvData, filterPlan]);
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 p-6">
-      <div className="max-w-7xl mx-auto space-y-8">
-        {/* Header */}
-        <div className="text-center py-12 bg-gradient-to-r from-blue-600 via-purple-600 to-blue-800 rounded-2xl text-white shadow-2xl">
-          <div className="flex justify-center items-center gap-3 mb-4">
-            <Target className="h-12 w-12" />
-            <h1 className="text-5xl font-bold">Sistema NPS</h1>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50">
+      <div className="max-w-7xl mx-auto p-6 space-y-8">
+        {/* Header melhorado */}
+        <div className="text-center py-16 bg-gradient-to-r from-blue-600 via-purple-600 to-blue-800 rounded-3xl text-white shadow-2xl">
+          <div className="flex justify-center items-center gap-4 mb-6">
+            <div className="p-4 bg-white/20 rounded-2xl backdrop-blur-sm">
+              <Target className="h-16 w-16" />
+            </div>
+            <h1 className="text-6xl font-black">Sistema NPS</h1>
           </div>
-          <p className="text-xl opacity-90">Net Promoter Score - Análise Avançada de Satisfação</p>
-          <div className="flex justify-center gap-6 mt-6 text-sm">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-gray-300 rounded-full"></div>
+          <p className="text-2xl opacity-90 mb-8">Net Promoter Score - Análise Avançada de Satisfação</p>
+          
+          {/* Indicadores de status melhorados */}
+          <div className="flex justify-center gap-8 text-lg font-semibold">
+            <div className="flex items-center gap-3 bg-white/20 px-6 py-3 rounded-full backdrop-blur-sm">
+              <div className="w-4 h-4 bg-gray-300 rounded-full"></div>
               <span>FREE</span>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-blue-400 rounded-full"></div>
+            <div className="flex items-center gap-3 bg-white/20 px-6 py-3 rounded-full backdrop-blur-sm">
+              <div className="w-4 h-4 bg-blue-400 rounded-full"></div>
               <span>LITE</span>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-purple-400 rounded-full"></div>
+            <div className="flex items-center gap-3 bg-white/20 px-6 py-3 rounded-full backdrop-blur-sm">
+              <div className="w-4 h-4 bg-purple-400 rounded-full"></div>
               <span>PRO</span>
             </div>
           </div>
+
+          {csvData.length > 0 && (
+            <div className="mt-8 flex flex-wrap justify-center gap-6">
+              <div className="bg-white/25 backdrop-blur-sm px-6 py-3 rounded-xl">
+                <CheckCircle2 className="h-6 w-6 inline mr-3" />
+                <span className="text-xl font-semibold">{csvData.length} registros</span>
+              </div>
+              <div className="bg-white/25 backdrop-blur-sm px-6 py-3 rounded-xl">
+                <Activity className="h-6 w-6 inline mr-3" />
+                <span className="text-xl font-semibold">NPS: {npsResults?.nps || 0}</span>
+              </div>
+              <div className="bg-white/25 backdrop-blur-sm px-6 py-3 rounded-xl">
+                <span className="text-xl font-semibold">Média: {npsResults?.averageScore || 0}/10</span>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Upload Section */}
-        <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-3xl font-bold flex items-center gap-3 text-gray-800">
-              <div className="p-3 bg-blue-100 rounded-xl">
-                <Upload className="text-blue-600 h-8 w-8" />
+        {/* Upload Section melhorada */}
+        <div className="bg-white rounded-3xl shadow-2xl p-10 border border-gray-100">
+          <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-6 mb-8">
+            <h2 className="text-4xl font-bold flex items-center gap-4 text-gray-800">
+              <div className="p-4 bg-blue-100 rounded-2xl">
+                <Upload className="text-blue-600 h-10 w-10" />
               </div>
               Upload do Arquivo CSV
             </h2>
-            {csvData.length > 0 && (
-              <button
-                onClick={exportData}
-                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl shadow-lg hover:from-green-600 hover:to-green-700 transition-all"
-              >
-                <Download className="h-5 w-5" />
-                Exportar CSV
-              </button>
-            )}
+            
+            <div className="flex flex-wrap gap-3">
+              {csvData.length > 0 && (
+                <>
+                  <button
+                    onClick={resetData}
+                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-gray-500 to-gray-600 text-white rounded-xl shadow-lg hover:from-gray-600 hover:to-gray-700 transition-all hover:scale-105"
+                  >
+                    <RefreshCw className="h-5 w-5" />
+                    Resetar
+                  </button>
+                  <button
+                    onClick={exportData}
+                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl shadow-lg hover:from-green-600 hover:to-green-700 transition-all hover:scale-105"
+                  >
+                    <Download className="h-5 w-5" />
+                    Exportar Análise Completa
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
-          <div className="border-2 border-dashed border-blue-200 rounded-xl p-12 text-center hover:border-blue-400 hover:bg-blue-50/30 transition-all duration-300 group">
+          {error && (
+            <div className="mb-8 p-6 bg-red-50 border-2 border-red-200 rounded-2xl flex items-start gap-4">
+              <AlertCircle className="h-6 w-6 text-red-500 mt-1 flex-shrink-0" />
+              <div>
+                <p className="font-bold text-red-800 text-lg">Erro no processamento:</p>
+                <p className="text-red-700">{error}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="border-3 border-dashed border-blue-300 rounded-2xl p-16 text-center hover:border-blue-500 hover:bg-blue-50/50 transition-all duration-300 group cursor-pointer">
             <input
               type="file"
               accept=".csv"
               onChange={(e) => processCSV(e.target.files[0])}
               className="hidden"
               id="csv-upload"
+              disabled={isProcessing}
             />
             <label htmlFor="csv-upload" className="cursor-pointer">
-              <div className="p-4 bg-blue-100 rounded-full w-24 h-24 mx-auto mb-6 group-hover:bg-blue-200 transition-colors flex items-center justify-center">
-                <FileText className="h-12 w-12 text-blue-600" />
+              <div className="p-6 bg-blue-100 rounded-full w-32 h-32 mx-auto mb-8 group-hover:bg-blue-200 transition-colors flex items-center justify-center">
+                {isProcessing ? (
+                  <RefreshCw className="h-16 w-16 text-blue-600 animate-spin" />
+                ) : (
+                  <FileText className="h-16 w-16 text-blue-600" />
+                )}
               </div>
-              <p className="text-2xl font-semibold text-gray-700 mb-2">Clique para selecionar o arquivo CSV</p>
-              <p className="text-gray-500 text-lg">Formato: data, cliente, usuario, nota, comentario, plano</p>
+              <p className="text-3xl font-bold text-gray-700 mb-4">
+                {isProcessing ? 'Processando arquivo...' : 'Clique para selecionar o arquivo CSV'}
+              </p>
+              <p className="text-gray-500 text-xl">
+                Formato obrigatório: nota, plano | Opcional: data, cliente, usuario, comentario
+              </p>
+              <div className="mt-4 text-lg text-gray-600 bg-gray-50 inline-block px-6 py-2 rounded-lg">
+                Limite: 5MB | Formatos aceitos: .csv
+              </div>
             </label>
           </div>
-
-          {isProcessing && (
-            <div className="mt-6 text-center">
-              <div className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-xl shadow-lg">
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
-                Processando arquivo...
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Insights Automáticos */}
-        {insights.length > 0 && (
+        {/* Upload History melhorado */}
+        {uploadHistory.length > 0 && (
           <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
-            <h3 className="text-2xl font-bold mb-6 flex items-center gap-3 text-gray-800">
-              <div className="p-3 bg-yellow-100 rounded-xl">
-                <Lightbulb className="text-yellow-600 h-6 w-6" />
+            <h3 className="text-2xl font-bold mb-6 flex items-center gap-3">
+              <div className="p-3 bg-green-100 rounded-xl">
+                <CheckCircle2 className="text-green-600 h-6 w-6" />
               </div>
-              Insights Automáticos
+              Histórico de Uploads
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {insights.map((insight, index) => (
-                <div
-                  key={index}
-                  className={`p-4 rounded-xl border-l-4 ${
-                    insight.type === 'success'
-                      ? 'bg-green-50 border-green-400'
-                      : insight.type === 'warning'
-                      ? 'bg-yellow-50 border-yellow-400'
-                      : 'bg-red-50 border-red-400'
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <span className="text-2xl">{insight.icon}</span>
-                    <p className="text-sm font-medium text-gray-800">{insight.message}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+              {uploadHistory.map((upload) => (
+                <div key={upload.id} className="bg-gradient-to-br from-gray-50 to-gray-100 p-6 rounded-xl border-2 border-gray-200 hover:scale-105 transition-transform">
+                  <div className="text-sm text-gray-600 mb-2">{upload.date}</div>
+                  <div className="text-xs text-gray-500 mb-3">{upload.time}</div>
+                  <div className="font-bold text-2xl text-gray-800">{upload.totalRecords}</div>
+                  <div className="text-sm text-gray-600">registros</div>
+                  <div className="text-xs text-gray-500 mt-2 truncate" title={upload.fileName}>
+                    {upload.fileName}
                   </div>
                 </div>
               ))}
@@ -438,16 +573,50 @@ const NPSSystem = () => {
           </div>
         )}
 
-        {/* NPS Score Principal */}
+        {/* Insights Automáticos melhorados */}
+        {insights.length > 0 && (
+          <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+            <h3 className="text-3xl font-bold mb-8 flex items-center gap-4 text-gray-800">
+              <div className="p-4 bg-yellow-100 rounded-2xl">
+                <Lightbulb className="text-yellow-600 h-8 w-8" />
+              </div>
+              Insights Automáticos
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {insights.map((insight, index) => (
+                <div
+                  key={index}
+                  className={`p-6 rounded-2xl border-l-6 hover:scale-105 transition-transform ${
+                    insight.type === 'success' 
+                      ? 'bg-green-50 border-green-400'
+                      : insight.type === 'warning'
+                      ? 'bg-yellow-50 border-yellow-400'
+                      : 'bg-red-50 border-red-400'
+                  }`}
+                >
+                  <div className="flex items-start gap-4">
+                    <span className="text-3xl">{insight.icon}</span>
+                    <p className="text-gray-800 font-semibold text-lg">{insight.message}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* NPS Score Principal melhorado */}
         {npsResults && (
-          <div className="flex justify-center mb-8">
-            <div className={`${getNPSGradient(npsResults.nps)} rounded-full p-8 shadow-2xl transform hover:scale-105 transition-transform`}>
-              <div className="bg-white rounded-full p-12 text-center min-w-[300px]">
-                <div className="text-6xl font-black text-gray-800 mb-2">{npsResults.nps}</div>
-                <div className="text-2xl font-semibold text-gray-600 mb-2">NPS Geral</div>
-                <div className={`text-xl font-bold ${getNPSColor(npsResults.nps)}`}>{getNPSLabel(npsResults.nps)}</div>
-                <div className="text-gray-500 mt-3 text-lg">{npsResults.total} avaliações</div>
-                <div className="text-gray-600 text-sm mt-2">Média: {npsResults.averageScore}/10</div>
+          <div className="flex justify-center mb-12">
+            <div className={`${getNPSGradient(npsResults.nps)} rounded-full p-12 shadow-2xl transform hover:scale-105 transition-transform`}>
+              <div className="bg-white rounded-full p-16 text-center min-w-[400px]">
+                <div className="text-8xl font-black text-gray-800 mb-4">{npsResults.nps}</div>
+                <div className="text-3xl font-bold text-gray-600 mb-4">NPS Geral</div>
+                <div className={`text-2xl font-bold mb-4 ${getNPSColor(npsResults.nps)}`}>
+                  {getNPSLabel(npsResults.nps)}
+                </div>
+                <div className="text-gray-500 text-xl mb-2">{npsResults.total} avaliações</div>
+                <div className="text-gray-600 text-lg">Média: {npsResults.averageScore}/10</div>
+                <div className="text-gray-600 text-lg">Mediana: {npsResults.median}</div>
               </div>
             </div>
           </div>
@@ -467,20 +636,30 @@ const NPSSystem = () => {
                 </div>
               </div>
               <div className="text-indigo-100 text-lg">Nota média das avaliações</div>
+              <div className="text-indigo-200 text-sm mt-2">Mediana: {npsResults.median}</div>
             </div>
 
             {Object.entries(planPercentages).map(([plan, data]) => (
-              <div key={plan} className={`${planColors[plan].bg} rounded-2xl shadow-xl p-6`}>
+              <div key={plan} className={`${planColors[plan].bg} rounded-2xl shadow-xl p-6 hover:scale-105 transition-transform`}>
                 <div className="flex items-center justify-between mb-4">
-                  <div className={`p-3 ${planColors[plan].bg} rounded-xl`}>
+                  <div className={`p-3 ${planColors[plan].bg} rounded-xl border-2 ${planColors[plan].border}`}>
                     <Users className={`h-8 w-8 ${planColors[plan].text}`} />
                   </div>
                   <div className="text-right">
-                    <div className={`text-3xl font-bold ${planColors[plan].text}`}>{data.percentage}%</div>
+                    <div className={`text-3xl font-bold ${planColors[plan].text}`}>
+                      {data.percentage}%
+                    </div>
                     <div className={`${planColors[plan].text} opacity-80`}>Plano {plan}</div>
                   </div>
                 </div>
-                <div className={`${planColors[plan].text} opacity-80 text-lg`}>{data.count} usuários</div>
+                <div className={`${planColors[plan].text} opacity-80 text-lg font-semibold`}>
+                  {data.count} usuários
+                </div>
+                {npsResultsByPlan[plan] && (
+                  <div className={`${planColors[plan].text} opacity-70 text-sm mt-2`}>
+                    NPS: {npsResultsByPlan[plan].nps}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -489,90 +668,104 @@ const NPSSystem = () => {
         {/* Cards de Métricas Gerais */}
         {npsResults && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-2xl shadow-xl p-6 text-white">
-              <div className="flex items-center justify-between mb-4">
-                <div className="p-3 bg-white/20 rounded-xl">
-                  <TrendingUp className="h-8 w-8" />
+            <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-2xl shadow-xl p-8 text-white hover:scale-105 transition-transform">
+              <div className="flex items-center justify-between mb-6">
+                <div className="p-4 bg-white/20 rounded-xl">
+                  <TrendingUp className="h-10 w-10" />
                 </div>
                 <div className="text-right">
-                  <div className="text-3xl font-bold">{npsResults.promoters}</div>
-                  <div className="text-green-100">Promotores</div>
+                  <div className="text-4xl font-bold">{npsResults.promoters}</div>
+                  <div className="text-green-100 text-xl">Promotores</div>
                 </div>
               </div>
-              <div className="text-green-100 text-lg">{npsResults.promoterPercentage}% do total</div>
-              <div className="text-sm text-green-200 mt-2">Notas 9-10</div>
+              <div className="text-green-100 text-xl font-semibold">{npsResults.promoterPercentage}% do total</div>
+              <div className="text-sm text-green-200 mt-2">Notas 9-10 • Recomendam ativamente</div>
             </div>
 
-            <div className="bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-2xl shadow-xl p-6 text-white">
-              <div className="flex items-center justify-between mb-4">
-                <div className="p-3 bg-white/20 rounded-xl">
-                  <Users className="h-8 w-8" />
+            <div className="bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-2xl shadow-xl p-8 text-white hover:scale-105 transition-transform">
+              <div className="flex items-center justify-between mb-6">
+                <div className="p-4 bg-white/20 rounded-xl">
+                  <Users className="h-10 w-10" />
                 </div>
                 <div className="text-right">
-                  <div className="text-3xl font-bold">{npsResults.passives}</div>
-                  <div className="text-yellow-100">Neutros</div>
+                  <div className="text-4xl font-bold">{npsResults.passives}</div>
+                  <div className="text-yellow-100 text-xl">Neutros</div>
                 </div>
               </div>
-              <div className="text-yellow-100 text-lg">{npsResults.passivePercentage}% do total</div>
-              <div className="text-sm text-yellow-200 mt-2">Notas 7-8</div>
+              <div className="text-yellow-100 text-xl font-semibold">{npsResults.passivePercentage}% do total</div>
+              <div className="text-sm text-yellow-200 mt-2">Notas 7-8 • Satisfeitos mas passivos</div>
             </div>
 
-            <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-2xl shadow-xl p-6 text-white">
-              <div className="flex items-center justify-between mb-4">
-                <div className="p-3 bg-white/20 rounded-xl">
-                  <AlertCircle className="h-8 w-8" />
+            <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-2xl shadow-xl p-8 text-white hover:scale-105 transition-transform">
+              <div className="flex items-center justify-between mb-6">
+                <div className="p-4 bg-white/20 rounded-xl">
+                  <AlertCircle className="h-10 w-10" />
                 </div>
                 <div className="text-right">
-                  <div className="text-3xl font-bold">{npsResults.detractors}</div>
-                  <div className="text-red-100">Detratores</div>
+                  <div className="text-4xl font-bold">{npsResults.detractors}</div>
+                  <div className="text-red-100 text-xl">Detratores</div>
                 </div>
               </div>
-              <div className="text-red-100 text-lg">{npsResults.detractorPercentage}% do total</div>
-              <div className="text-sm text-red-200 mt-2">Notas 0-6</div>
+              <div className="text-red-100 text-xl font-semibold">{npsResults.detractorPercentage}% do total</div>
+              <div className="text-sm text-red-200 mt-2">Notas 0-6 • Podem prejudicar a marca</div>
             </div>
           </div>
         )}
 
         {/* Cards NPS por Plano */}
         {Object.keys(npsResultsByPlan).length > 0 && (
-          <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
-            <h3 className="text-3xl font-bold mb-6 flex items-center gap-3 text-gray-800">
-              <div className="p-3 bg-purple-100 rounded-xl">
-                <Award className="text-purple-600 h-8 w-8" />
+          <div className="bg-white rounded-3xl shadow-2xl p-10 border border-gray-100">
+            <h3 className="text-4xl font-bold mb-8 flex items-center gap-4 text-gray-800">
+              <div className="p-4 bg-purple-100 rounded-2xl">
+                <Award className="text-purple-600 h-10 w-10" />
               </div>
-              NPS por Plano
+              Análise Detalhada por Plano
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               {Object.keys(npsResultsByPlan).map((plan) => {
                 const data = npsResultsByPlan[plan];
                 const colors = planColors[plan];
                 return (
-                  <div key={plan} className={`${colors.bg} ${colors.border} border-2 rounded-2xl p-6 hover:scale-105 transition-transform shadow-lg`}>
-                    <div className="flex items-center justify-between mb-4">
-                      <span className={`${colors.text} ${colors.bg} px-4 py-2 rounded-full text-sm font-bold border ${colors.border}`}>
-                        {plan}
+                  <div
+                    key={plan}
+                    className={`${colors.bg} ${colors.border} border-3 rounded-3xl p-8 hover:scale-105 transition-all shadow-xl hover:shadow-2xl`}
+                  >
+                    <div className="flex items-center justify-between mb-6">
+                      <span className={`${colors.bg} ${colors.text} px-6 py-3 rounded-full text-lg font-bold border-2 ${colors.border}`}>
+                        PLANO {plan}
                       </span>
                       <div className="text-right">
-                        <div className={`text-3xl font-black ${colors.text}`}>{data.nps}</div>
-                        <div className="text-gray-600 text-sm">{data.total} usuários</div>
+                        <div className={`text-4xl font-black ${colors.text}`}>{data.nps}</div>
+                        <div className="text-gray-600 font-semibold">{data.total} usuários</div>
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span>Média:</span>
-                        <span className="font-semibold text-gray-700">{data.averageScore}/10</span>
+                    <div className="space-y-4">
+                      <div className="flex justify-between text-lg">
+                        <span className="font-semibold">Média:</span>
+                        <span className="font-bold text-gray-700">{data.averageScore}/10</span>
                       </div>
-                      <div className="flex justify-between text-sm">
-                        <span>Promotores:</span>
-                        <span className="font-semibold text-green-600">{data.promoters}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span>Neutros:</span>
-                        <span className="font-semibold text-yellow-600">{data.passives}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span>Detratores:</span>
-                        <span className="font-semibold text-red-600">{data.detractors}</span>
+                      <div className="bg-white/50 rounded-xl p-4 space-y-3">
+                        <div className="flex justify-between">
+                          <span className="text-green-700 font-semibold">Promotores:</span>
+                          <div className="text-right">
+                            <span className="font-bold text-green-600">{data.promoters}</span>
+                            <span className="text-green-600 text-sm ml-2">({data.promoterPercentage}%)</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-yellow-700 font-semibold">Neutros:</span>
+                          <div className="text-right">
+                            <span className="font-bold text-yellow-600">{data.passives}</span>
+                            <span className="text-yellow-600 text-sm ml-2">({data.passivePercentage}%)</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-red-700 font-semibold">Detratores:</span>
+                          <div className="text-right">
+                            <span className="font-bold text-red-600">{data.detractors}</span>
+                            <span className="text-red-600 text-sm ml-2">({data.detractorPercentage}%)</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -599,7 +792,7 @@ const NPSSystem = () => {
                   <XAxis dataKey="score" />
                   <YAxis />
                   <Tooltip content={<ScoreTooltip />} />
-                  <Bar dataKey="count" fill="#06B6D4" radius={4} />
+                  <Bar dataKey="count" fill="#06B6D4" radius={6} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -640,7 +833,7 @@ const NPSSystem = () => {
                   <div className="p-3 bg-blue-100 rounded-xl">
                     <BarChart3 className="text-blue-600 h-6 w-6" />
                   </div>
-                  NPS por Plano
+                  Comparativo NPS por Plano
                 </h3>
                 <ResponsiveContainer width="100%" height={350}>
                   <BarChart data={planNPSData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
@@ -661,7 +854,7 @@ const NPSSystem = () => {
                   <div className="p-3 bg-purple-100 rounded-xl">
                     <Users className="text-purple-600 h-6 w-6" />
                   </div>
-                  Usuários por Plano
+                  Distribuição de Usuários
                 </h3>
                 <ResponsiveContainer width="100%" height={350}>
                   <PieChart>
@@ -692,12 +885,12 @@ const NPSSystem = () => {
                   <div className="p-3 bg-pink-100 rounded-xl">
                     <TrendingUp className="text-pink-600 h-6 w-6" />
                   </div>
-                  Evolução Temporal do NPS (mock)
+                  Evolução Temporal do NPS (Dados de Exemplo)
                 </h3>
                 <select
                   value={selectedPeriod}
                   onChange={(e) => setSelectedPeriod(e.target.value)}
-                  className="px-3 py-2 border rounded-lg text-sm text-gray-700 bg-white"
+                  className="px-4 py-2 border-2 rounded-xl text-gray-700 bg-white font-semibold hover:border-blue-400 focus:border-blue-500 focus:outline-none"
                 >
                   <option value="all">Todo o período</option>
                   <option value="30d">Últimos 30 dias</option>
@@ -710,58 +903,69 @@ const NPSSystem = () => {
                   <XAxis dataKey="date" />
                   <YAxis />
                   <Tooltip />
-                  <Line type="monotone" dataKey="FREE" stroke={planColors['FREE'].chart} strokeWidth={3} />
-                  <Line type="monotone" dataKey="LITE" stroke={planColors['LITE'].chart} strokeWidth={3} />
-                  <Line type="monotone" dataKey="PRO" stroke={planColors['PRO'].chart} strokeWidth={3} />
+                  <Line type="monotone" dataKey="FREE" stroke={planColors['FREE'].chart} strokeWidth={4} />
+                  <Line type="monotone" dataKey="LITE" stroke={planColors['LITE'].chart} strokeWidth={4} />
+                  <Line type="monotone" dataKey="PRO" stroke={planColors['PRO'].chart} strokeWidth={4} />
                 </LineChart>
               </ResponsiveContainer>
-              <p className="text-xs text-gray-500 mt-2">*Dados de exemplo para visualização da tendência.</p>
+              <p className="text-sm text-gray-500 mt-4 bg-gray-50 p-3 rounded-lg">
+                <strong>Nota:</strong> Dados simulados para demonstração da funcionalidade de acompanhamento temporal.
+              </p>
             </div>
           </div>
         )}
 
         {/* Formato CSV Esperado */}
         {csvData.length === 0 && (
-          <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl shadow-xl p-8 border-2 border-amber-200">
-            <h3 className="text-2xl font-bold mb-6 flex items-center gap-3 text-amber-800">
-              <div className="p-3 bg-amber-200 rounded-xl">
-                <AlertCircle className="text-amber-700 h-6 w-6" />
+          <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-3xl shadow-2xl p-10 border-3 border-amber-200">
+            <h3 className="text-4xl font-bold mb-8 flex items-center gap-4 text-amber-800">
+              <div className="p-4 bg-amber-200 rounded-2xl">
+                <AlertCircle className="text-amber-700 h-10 w-10" />
               </div>
               Formato CSV Esperado
             </h3>
-
-            <div className="bg-white/70 rounded-xl p-6 border border-amber-300 mb-4">
-              <div className="font-mono text-lg text-gray-800 text-center">
-                <div className="font-semibold text-amber-800 text-xl mb-2">Cabeçalho do arquivo:</div>
-                <div className="bg-amber-100 p-4 rounded-lg border border-amber-300">data,cliente,usuario,nota,comentario,plano</div>
+            <div className="bg-white/80 rounded-2xl p-8 border-2 border-amber-300 mb-6">
+              <div className="font-mono text-xl text-gray-800 text-center">
+                <div className="font-bold text-amber-800 text-2xl mb-4">Cabeçalho obrigatório:</div>
+                <div className="bg-amber-100 p-6 rounded-xl border-2 border-amber-300 text-2xl">
+                  nota,plano
+                </div>
+                <div className="font-bold text-amber-800 text-xl mt-6 mb-4">Cabeçalho completo (recomendado):</div>
+                <div className="bg-amber-100 p-6 rounded-xl border-2 border-amber-300 text-lg">
+                  data,cliente,usuario,nota,comentario,plano
+                </div>
               </div>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 bg-amber-100 rounded-lg border border-amber-300">
-                <p className="text-amber-800 font-medium mb-2">
-                  <strong>Campos obrigatórios:</strong>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="p-6 bg-amber-100 rounded-2xl border-2 border-amber-300">
+                <p className="text-amber-800 font-bold mb-4 text-xl">
+                  Campos obrigatórios:
                 </p>
-                <ul className="text-amber-700 text-sm space-y-1">
-                  <li>• <strong>data:</strong> Data da avaliação</li>
-                  <li>• <strong>cliente:</strong> ID do cliente</li>
-                  <li>• <strong>usuario:</strong> Nome/ID do usuário</li>
-                  <li>• <strong>nota:</strong> Nota de 0 a 10</li>
+                <ul className="text-amber-700 space-y-2 text-lg">
+                  <li>• <strong>nota:</strong> Valor de 0 a 10</li>
                   <li>• <strong>plano:</strong> FREE, LITE ou PRO</li>
                 </ul>
               </div>
-
-              <div className="p-4 bg-amber-100 rounded-lg border border-amber-300">
-                <p className="text-amber-800 font-medium mb-2">
-                  <strong>Campo opcional:</strong>
+              <div className="p-6 bg-amber-100 rounded-2xl border-2 border-amber-300">
+                <p className="text-amber-800 font-bold mb-4 text-xl">
+                  Campos opcionais:
                 </p>
-                <ul className="text-amber-700 text-sm space-y-1">
-                  <li>• <strong>comentario:</strong> Feedback do usuário</li>
+                <ul className="text-amber-700 space-y-2 text-lg">
+                  <li>• <strong>data:</strong> Data da avaliação</li>
+                  <li>• <strong>cliente:</strong> ID do cliente</li>
+                  <li>• <strong>usuario:</strong> Nome do usuário</li>
+                  <li>• <strong>comentario:</strong> Feedback textual</li>
                 </ul>
-                <p className="text-amber-700 text-sm mt-2">
-                  <strong>Dica:</strong> Notas entre 0-10 e planos em maiúsculas.
-                </p>
               </div>
+            </div>
+            <div className="mt-6 p-6 bg-amber-200 rounded-2xl border-2 border-amber-400">
+              <p className="text-amber-900 font-bold text-xl mb-2">Dicas importantes:</p>
+              <ul className="text-amber-800 space-y-2">
+                <li>• Notas devem estar entre 0 e 10 (números inteiros ou decimais)</li>
+                <li>• Planos devem ser exatamente: FREE, LITE ou PRO (maiúsculas)</li>
+                <li>• Tamanho máximo do arquivo: 5MB</li>
+                <li>• Codificação recomendada: UTF-8</li>
+              </ul>
             </div>
           </div>
         )}
@@ -769,70 +973,140 @@ const NPSSystem = () => {
         {/* Tabela de Dados */}
         {csvData.length > 0 && (
           <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
-            <h3 className="text-2xl font-bold mb-6 flex items-center gap-3 text-gray-800">
-              <div className="p-3 bg-indigo-100 rounded-xl">
-                <FileText className="text-indigo-600 h-6 w-6" />
+            <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 mb-6">
+              <h3 className="text-2xl font-bold flex items-center gap-3 text-gray-800">
+                <div className="p-3 bg-indigo-100 rounded-xl">
+                  <FileText className="text-indigo-600 h-6 w-6" />
+                </div>
+                Dados Processados ({filteredTableData.length} registros)
+                <button
+                  onClick={() => setShowDataTable(!showDataTable)}
+                  className="ml-4 p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                  title={showDataTable ? 'Ocultar tabela' : 'Mostrar tabela'}
+                >
+                  {showDataTable ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                </button>
+              </h3>
+              
+              <div className="flex items-center gap-3">
+                <Filter className="h-5 w-5 text-gray-500" />
+                <select
+                  value={filterPlan}
+                  onChange={(e) => setFilterPlan(e.target.value)}
+                  className="px-4 py-2 border-2 rounded-xl text-gray-700 bg-white font-semibold hover:border-blue-400 focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="all">Todos os planos ({csvData.length})</option>
+                  <option value="FREE">FREE ({csvData.filter(r => r.plano?.toUpperCase() === 'FREE').length})</option>
+                  <option value="LITE">LITE ({csvData.filter(r => r.plano?.toUpperCase() === 'LITE').length})</option>
+                  <option value="PRO">PRO ({csvData.filter(r => r.plano?.toUpperCase() === 'PRO').length})</option>
+                </select>
               </div>
-              Dados Processados ({csvData.length} registros)
-            </h3>
-            <div className="overflow-x-auto">
-              <table className="min-w-full table-auto">
-                <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Data</th>
-                    <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Cliente</th>
-                    <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Usuário</th>
-                    <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Nota</th>
-                    <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Plano</th>
-                    <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Categoria</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {csvData.slice(0, 15).map((row, index) => {
-                    const nota = Number(row.nota);
-                    const categoria = nota >= 9 ? 'Promotor' : nota >= 7 ? 'Neutro' : 'Detrator';
-                    const corCategoria =
-                      nota >= 9 ? 'text-green-600 bg-green-50' : nota >= 7 ? 'text-yellow-600 bg-yellow-50' : 'text-red-600 bg-red-50';
-                    const plano = row.plano?.toUpperCase() || 'N/A';
-                    const planColor = planColors[plano] || planColors.FREE;
-
-                    return (
-                      <tr key={index} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{row.data?.split(' ')[0] || 'N/A'}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{row.cliente}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{row.usuario}</td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-lg font-bold text-gray-900">{row.nota}</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`${planColor.bg} ${planColor.text} px-3 py-1 rounded-full text-xs font-bold border ${planColor.border}`}>
-                            {plano}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`px-3 py-1 rounded-full text-xs font-bold ${corCategoria}`}>{categoria}</span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {csvData.length > 15 && (
-                <p className="text-gray-500 text-sm mt-4 text-center bg-gray-50 py-3 rounded-lg">
-                  Mostrando 15 de {csvData.length} registros
-                </p>
-              )}
             </div>
+
+            {showDataTable && (
+              <div className="overflow-x-auto">
+                <table className="min-w-full table-auto">
+                  <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
+                    <tr>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Data</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Cliente</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Usuário</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Nota</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Plano</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Categoria</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">Comentário</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {filteredTableData.slice(0, 20).map((row, index) => {
+                      const nota = Number(row.nota);
+                      const categoria = nota >= 9 ? 'Promotor' : nota >= 7 ? 'Neutro' : 'Detrator';
+                      const corCategoria = nota >= 9 ? 'text-green-600 bg-green-50 border-green-200' : nota >= 7 ? 'text-yellow-600 bg-yellow-50 border-yellow-200' : 'text-red-600 bg-red-50 border-red-200';
+                      const plano = row.plano?.toUpperCase() || 'N/A';
+                      const planColor = planColors[plano] || planColors.FREE;
+
+                      return (
+                        <tr key={index} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                            {row.data?.split(' ')[0] || 'N/A'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                            {row.cliente || 'N/A'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                            {row.usuario || 'N/A'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-xl font-bold text-gray-900">{row.nota}</div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`${planColor.bg} ${planColor.text} px-3 py-1 rounded-full text-sm font-bold border-2 ${planColor.border}`}>
+                              {plano}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`px-3 py-1 rounded-full text-sm font-bold border ${corCategoria}`}>
+                              {categoria}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-600 max-w-xs">
+                            <div className="truncate" title={row.comentario}>
+                              {row.comentario || 'Sem comentário'}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {filteredTableData.length > 20 && (
+                  <div className="text-gray-500 text-center bg-gray-50 py-4 rounded-lg mt-4">
+                    <p className="font-semibold">Mostrando 20 de {filteredTableData.length} registros</p>
+                    <p className="text-sm">Use o filtro por plano para refinar os resultados</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
+        {/* Botão Scroll to Top */}
+        {showScrollTop && (
+          <button
+            onClick={scrollToTop}
+            className="fixed bottom-8 right-8 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-2xl transition-all hover:scale-110 z-50"
+            aria-label="Voltar ao topo"
+          >
+            <ArrowUp className="h-6 w-6" />
+          </button>
+        )}
+
         {/* Footer */}
-        <div className="text-center py-8 text-gray-600">
-          <div className="flex items-center justify-center gap-2 mb-2">
-            <Target className="h-5 w-5" />
-            <span className="font-medium">Sistema NPS Avançado</span>
+        <div className="text-center py-10 text-gray-600 bg-white rounded-3xl shadow-2xl border border-gray-100">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <div className="p-3 bg-blue-100 rounded-xl">
+              <Target className="h-8 w-8 text-blue-600" />
+            </div>
+            <span className="font-bold text-2xl text-gray-800">Sistema NPS Avançado</span>
           </div>
-          <p className="text-sm">Análise completa de Net Promoter Score com insights automáticos e visualizações interativas</p>
+          <p className="text-lg mb-4">Análise completa de Net Promoter Score com insights automáticos e visualizações interativas</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-500 max-w-4xl mx-auto">
+            <div className="flex items-center justify-center gap-2">
+              <CheckCircle2 className="h-4 w-4" />
+              <span>Processamento em tempo real</span>
+            </div>
+            <div className="flex items-center justify-center gap-2">
+              <BarChart3 className="h-4 w-4" />
+              <span>Visualizações interativas</span>
+            </div>
+            <div className="flex items-center justify-center gap-2">
+              <Lightbulb className="h-4 w-4" />
+              <span>Insights automáticos</span>
+            </div>
+          </div>
+          <div className="mt-6 text-xs text-gray-400">
+            Desenvolvido com React + Tailwind CSS + Recharts | v2.0
+          </div>
         </div>
       </div>
     </div>
