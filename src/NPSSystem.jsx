@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Upload, FileText, BarChart3, TrendingUp, Users, AlertCircle, 
   Award, Target, Download, Lightbulb, Activity, CheckCircle2,
-  RefreshCw, Eye, EyeOff, Filter, ArrowUp
+  RefreshCw, Eye, EyeOff, Filter, ArrowUp, Loader
 } from 'lucide-react';
 import { 
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, 
@@ -13,6 +13,9 @@ const NPSSystem = () => {
   const [csvData, setCsvData] = useState([]);
   const [npsResults, setNpsResults] = useState(null);
   const [npsResultsByPlan, setNpsResultsByPlan] = useState({});
+  const [scoreDistributionData, setScoreDistributionData] = useState([]);
+  const [planPercentages, setPlanPercentages] = useState({});
+  const [insights, setInsights] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadHistory, setUploadHistory] = useState([]);
   const [selectedPeriod, setSelectedPeriod] = useState('all');
@@ -20,6 +23,7 @@ const NPSSystem = () => {
   const [filterPlan, setFilterPlan] = useState('all');
   const [error, setError] = useState(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [apiUrl] = useState('http://localhost:5000/api'); // URL do backend
 
   useEffect(() => {
     const handleScroll = () => {
@@ -56,13 +60,16 @@ const NPSSystem = () => {
     setCsvData([]);
     setNpsResults(null);
     setNpsResultsByPlan({});
+    setScoreDistributionData([]);
+    setPlanPercentages({});
+    setInsights([]);
     setError(null);
     setShowDataTable(false);
     setFilterPlan('all');
   };
 
-  // Upload & Parse CSV with improved validation
-  const processCSV = (file) => {
+  // Upload & Process CSV via API
+  const processCSV = async (file) => {
     if (!file) return;
     
     // Verificar tipo de arquivo
@@ -80,256 +87,47 @@ const NPSSystem = () => {
     setIsProcessing(true);
     setError(null);
     
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const text = e.target.result;
-        const normalized = text.replace(/\r/g, '');
-        const lines = normalized.split('\n').filter(line => line.trim());
-        
-        if (lines.length === 0) {
-          throw new Error('Arquivo CSV vazio');
-        }
+    try {
+      const formData = new FormData();
+      formData.append('csvFile', file);
 
-        const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-        const requiredHeaders = ['nota', 'plano'];
-        const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
-        
-        if (missingHeaders.length > 0) {
-          throw new Error(`Campos obrigatórios ausentes: ${missingHeaders.join(', ')}`);
-        }
+      const response = await fetch(`${apiUrl}/upload-csv`, {
+        method: 'POST',
+        body: formData,
+      });
 
-        const data = lines.slice(1)
-          .map((line, index) => {
-            const values = line.split(',');
-            const obj = { lineNumber: index + 2 }; // Para debug
-            headers.forEach((header, idx) => {
-              obj[header] = values[idx]?.trim();
-            });
-            return obj;
-          })
-          .filter(row => {
-            const nota = Number(row.nota);
-            return row.nota && !isNaN(nota) && row.plano && 
-                   nota >= 0 && nota <= 10;
-          });
+      const result = await response.json();
 
-        if (data.length === 0) {
-          throw new Error('Nenhum registro válido encontrado no arquivo');
-        }
-
-        // Verificar se há planos válidos
-        const validPlans = ['FREE', 'LITE', 'PRO'];
-        const hasValidPlans = data.some(row => 
-          validPlans.includes(row.plano?.toUpperCase())
-        );
-
-        if (!hasValidPlans) {
-          throw new Error('Nenhum plano válido encontrado. Use: FREE, LITE ou PRO');
-        }
-
-        setCsvData(data);
-        calculateNPS(data);
-        calculateNPSByPlan(data);
-        setShowDataTable(true);
-        
-        // Adicionar ao histórico
-        setUploadHistory(prev => [{
-          date: new Date().toISOString().split('T')[0],
-          time: new Date().toLocaleTimeString('pt-BR'),
-          fileName: file.name,
-          totalRecords: data.length,
-          id: Date.now(),
-        }, ...prev.slice(0, 4)]);
-        
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setIsProcessing(false);
+      if (!result.success) {
+        throw new Error(result.error || 'Erro no processamento do arquivo');
       }
-    };
-    
-    reader.onerror = () => {
-      setError('Erro ao ler o arquivo');
+
+      // Atualizar estado com os dados recebidos da API
+      const { data } = result;
+      setCsvData(data.csvData);
+      setNpsResults(data.npsResults);
+      setNpsResultsByPlan(data.npsResultsByPlan);
+      setScoreDistributionData(data.scoreDistributionData);
+      setPlanPercentages(data.planPercentages);
+      setInsights(data.insights);
+      setShowDataTable(true);
+      
+      // Adicionar ao histórico
+      setUploadHistory(prev => [{
+        date: new Date().toISOString().split('T')[0],
+        time: new Date().toLocaleTimeString('pt-BR'),
+        fileName: file.name,
+        totalRecords: data.totalRecords,
+        id: Date.now(),
+      }, ...prev.slice(0, 4)]);
+
+    } catch (err) {
+      console.error('Erro na API:', err);
+      setError(err.message || 'Erro de conexão com o servidor');
+    } finally {
       setIsProcessing(false);
-    };
-    
-    reader.readAsText(file, 'UTF-8');
+    }
   };
-
-  // Cálculos NPS 
-  const calculateNPS = (data) => {
-    const scores = data.map(row => Number(row.nota));
-    const total = scores.length;
-    const promoters = scores.filter(score => score >= 9).length;
-    const passives = scores.filter(score => score >= 7 && score <= 8).length;
-    const detractors = scores.filter(score => score <= 6).length;
-
-    const promoterPercentage = (promoters / total) * 100;
-    const detractorPercentage = (detractors / total) * 100;
-    const nps = Math.round(promoterPercentage - detractorPercentage);
-    const averageScore = total > 0 ? scores.reduce((a, b) => a + b, 0) / total : 0;
-
-    // Calcular mediana
-    const sortedScores = [...scores].sort((a, b) => a - b);
-    const median = total % 2 === 0
-      ? (sortedScores[total / 2 - 1] + sortedScores[total / 2]) / 2
-      : sortedScores[Math.floor(total / 2)];
-
-    const results = {
-      nps,
-      total,
-      promoters,
-      passives,
-      detractors,
-      promoterPercentage: Math.round(promoterPercentage),
-      passivePercentage: Math.round((passives / total) * 100),
-      detractorPercentage: Math.round(detractorPercentage),
-      averageScore: averageScore.toFixed(1),
-      median: median.toFixed(1),
-    };
-
-    setNpsResults(results);
-  };
-
-  const calculateNPSByPlan = (data) => {
-    const plans = ['FREE', 'LITE', 'PRO'];
-    const resultsByPlan = {};
-
-    plans.forEach(plan => {
-      const planData = data.filter(row => row.plano?.toUpperCase() === plan);
-      const scores = planData.map(row => Number(row.nota));
-      const total = scores.length;
-
-      if (total > 0) {
-        const promoters = scores.filter(score => score >= 9).length;
-        const passives = scores.filter(score => score >= 7 && score <= 8).length;
-        const detractors = scores.filter(score => score <= 6).length;
-        const promoterPercentage = (promoters / total) * 100;
-        const detractorPercentage = (detractors / total) * 100;
-        const nps = Math.round(promoterPercentage - detractorPercentage);
-        const averageScore = scores.reduce((a, b) => a + b, 0) / total;
-
-        resultsByPlan[plan] = {
-          nps,
-          total,
-          promoters,
-          passives,
-          detractors,
-          promoterPercentage: Math.round(promoterPercentage),
-          passivePercentage: Math.round((passives / total) * 100),
-          detractorPercentage: Math.round(detractorPercentage),
-          averageScore: averageScore.toFixed(1),
-        };
-      }
-    });
-
-    setNpsResultsByPlan(resultsByPlan);
-  };
-
-  // Distribuição de notas melhorada
-  const scoreDistributionData = useMemo(() => {
-    if (!csvData.length) return [];
-    
-    const distribution = {};
-    for (let i = 0; i <= 10; i++) distribution[i] = 0;
-    
-    csvData.forEach(row => {
-      const score = Number(row.nota);
-      if (!Number.isNaN(score)) distribution[score]++;
-    });
-
-    return Object.entries(distribution).map(([score, count]) => ({
-      score: Number(score),
-      count,
-      percentage: ((count / csvData.length) * 100).toFixed(1),
-      category: Number(score) >= 9 ? 'Promotor' : Number(score) >= 7 ? 'Neutro' : 'Detrator'
-    }));
-  }, [csvData]);
-
-  // Percentuais por plano
-  const planPercentages = useMemo(() => {
-    if (!csvData.length) return {};
-    
-    const validPlans = ['FREE', 'LITE', 'PRO'];
-    const planCounts = { FREE: 0, LITE: 0, PRO: 0 };
-    
-    csvData.forEach(row => {
-      const plan = row.plano?.toUpperCase();
-      if (validPlans.includes(plan)) planCounts[plan]++;
-    });
-
-    const percentages = {};
-    validPlans.forEach(plan => {
-      const count = planCounts[plan];
-      if (count > 0) {
-        percentages[plan] = {
-          count,
-          percentage: ((count / csvData.length) * 100).toFixed(1),
-        };
-      }
-    });
-
-    return percentages;
-  }, [csvData]);
-
-  // Insights 
-  const insights = useMemo(() => {
-    if (!npsResults || Object.keys(npsResultsByPlan).length === 0) return [];
-
-    const all = Object.entries(npsResultsByPlan);
-    if (all.length === 0) return [];
-
-    const bestPlan = all.reduce((a, b) => a[1].nps > b[1].nps ? a : b);
-    const worstPlan = all.reduce((a, b) => a[1].nps < b[1].nps ? a : b);
-
-    const insights = [];
-
-    // Insight sobre melhor plano
-    insights.push({
-      type: 'success',
-      icon: '🚀',
-      message: `Plano ${bestPlan[0]} lidera com NPS ${bestPlan[1].nps} (${bestPlan[1].total} usuários)`,
-    });
-
-    // Insight sobre plano que precisa atenção
-    if (worstPlan[1].nps < 30) {
-      insights.push({
-        type: 'warning',
-        icon: '⚠️',
-        message: `Plano ${worstPlan[0]} precisa atenção: NPS ${worstPlan[1].nps}`,
-      });
-    }
-
-    // Insight sobre detratores
-    if (npsResults.detractorPercentage > 30) {
-      insights.push({
-        type: 'error',
-        icon: '🔴',
-        message: `${npsResults.detractorPercentage}% de detratores - ação imediata necessária`,
-      });
-    }
-
-    // Insight sobre promotores
-    if (npsResults.promoterPercentage > 60) {
-      insights.push({
-        type: 'success',
-        icon: '✨',
-        message: `${npsResults.promoterPercentage}% promotores - excelente para crescimento orgânico`,
-      });
-    }
-
-    // Insight sobre média
-    if (Number(npsResults.averageScore) > 8.5) {
-      insights.push({
-        type: 'success',
-        icon: '⭐',
-        message: `Média excelente: ${npsResults.averageScore}/10`,
-      });
-    }
-
-    return insights;
-  }, [npsResults, npsResultsByPlan]);
 
   const exportData = () => {
     if (!csvData.length) return;
@@ -530,13 +328,13 @@ const NPSSystem = () => {
             <label htmlFor="csv-upload" className="cursor-pointer">
               <div className="p-6 bg-blue-100 rounded-full w-32 h-32 mx-auto mb-8 group-hover:bg-blue-200 transition-colors flex items-center justify-center">
                 {isProcessing ? (
-                  <RefreshCw className="h-16 w-16 text-blue-600 animate-spin" />
+                  <Loader className="h-16 w-16 text-blue-600 animate-spin" />
                 ) : (
                   <FileText className="h-16 w-16 text-blue-600" />
                 )}
               </div>
               <p className="text-3xl font-bold text-gray-700 mb-4">
-                {isProcessing ? 'Processando arquivo...' : 'Clique para selecionar o arquivo CSV'}
+                {isProcessing ? 'Enviando e processando arquivo...' : 'Clique para selecionar o arquivo CSV'}
               </p>
               <p className="text-gray-500 text-xl">
                 Formato obrigatório: nota, plano | Opcional: data, cliente, usuario, comentario
@@ -1093,7 +891,7 @@ const NPSSystem = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-500 max-w-4xl mx-auto">
             <div className="flex items-center justify-center gap-2">
               <CheckCircle2 className="h-4 w-4" />
-              <span>Processamento em tempo real</span>
+              <span>Processamento via API</span>
             </div>
             <div className="flex items-center justify-center gap-2">
               <BarChart3 className="h-4 w-4" />
@@ -1105,7 +903,7 @@ const NPSSystem = () => {
             </div>
           </div>
           <div className="mt-6 text-xs text-gray-400">
-            Desenvolvido com React + Tailwind CSS + Recharts | v2.0
+            Desenvolvido com React + Node.js + Express | Frontend/Backend integrado | v2.1
           </div>
         </div>
       </div>
