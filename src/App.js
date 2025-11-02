@@ -7,7 +7,6 @@ function App() {
   const [theme, setTheme] = useState('light');
 
   useEffect(() => {
-    
     const timer = setTimeout(() => {
       setIsLoading(false);
     }, 1000);
@@ -16,7 +15,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // Aplicar tema no documento
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 

@@ -23,7 +23,9 @@ const NPSSystem = () => {
   const [filterPlan, setFilterPlan] = useState('all');
   const [error, setError] = useState(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
-  const [apiUrl] = useState('http://localhost:5000/api'); // URL do backend
+  const [apiUrl] = useState('http://localhost:5000/api');
+  const [npsHistoryData, setNpsHistoryData] = useState([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -33,6 +35,14 @@ const NPSSystem = () => {
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  // Carregar histórico quando houver dados ou mudar período
+  useEffect(() => {
+    if (npsResults) {
+      loadNPSHistory();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPeriod]);
 
   const scrollToTop = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -45,15 +55,34 @@ const NPSSystem = () => {
     PRO: { bg: 'bg-purple-100', text: 'text-purple-800', border: 'border-purple-300', chart: '#8B5CF6' },
   };
 
-  // Simulação de dados de histórico por plano
-  const mockHistoryByPlan = useMemo(() => [
-    { date: '2024-12-25', FREE: 22, LITE: 40, PRO: 59 },
-    { date: '2025-01-01', FREE: 28, LITE: 38, PRO: 62 },
-    { date: '2025-01-08', FREE: 30, LITE: 42, PRO: 68 },
-    { date: '2025-01-15', FREE: 25, LITE: 45, PRO: 65 },
-    { date: '2025-01-22', FREE: 32, LITE: 47, PRO: 70 },
-    { date: '2025-01-29', FREE: 35, LITE: 50, PRO: 72 },
-  ], []);
+  // Função para carregar histórico do backend
+  const loadNPSHistory = async () => {
+    setIsLoadingHistory(true);
+    try {
+      const response = await fetch(`${apiUrl}/nps-history?period=${selectedPeriod}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      
+      console.log('📊 Resposta do histórico:', result);
+
+      if (result.success && result.data && result.data.length > 0) {
+        setNpsHistoryData(result.data);
+        console.log(`✅ Histórico carregado: ${result.data.length} registros`, result.data);
+      } else {
+        setNpsHistoryData([]);
+        console.log('⚠️ Nenhum histórico disponível no backend');
+      }
+    } catch (err) {
+      console.error('❌ Erro ao carregar histórico:', err);
+      setNpsHistoryData([]);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
 
   // Reset function
   const resetData = () => {
@@ -66,19 +95,18 @@ const NPSSystem = () => {
     setError(null);
     setShowDataTable(false);
     setFilterPlan('all');
+    setNpsHistoryData([]);
   };
 
   // Upload & Process CSV via API
   const processCSV = async (file) => {
     if (!file) return;
     
-    // Verificar tipo de arquivo
     if (!file.name.toLowerCase().endsWith('.csv')) {
       setError('Por favor, selecione apenas arquivos CSV.');
       return;
     }
 
-    // Verificar tamanho do arquivo (máximo 5MB)
     if (file.size > 5 * 1024 * 1024) {
       setError('Arquivo muito grande. Limite máximo: 5MB.');
       return;
@@ -102,7 +130,6 @@ const NPSSystem = () => {
         throw new Error(result.error || 'Erro no processamento do arquivo');
       }
 
-      // Atualizar estado com os dados recebidos da API
       const { data } = result;
       setCsvData(data.csvData);
       setNpsResults(data.npsResults);
@@ -112,7 +139,6 @@ const NPSSystem = () => {
       setInsights(data.insights);
       setShowDataTable(true);
       
-      // Adicionar ao histórico
       setUploadHistory(prev => [{
         date: new Date().toISOString().split('T')[0],
         time: new Date().toLocaleTimeString('pt-BR'),
@@ -120,6 +146,12 @@ const NPSSystem = () => {
         totalRecords: data.totalRecords,
         id: Date.now(),
       }, ...prev.slice(0, 4)]);
+
+      // Carregar histórico após upload bem-sucedido
+      console.log('🔄 Carregando histórico após upload...');
+      setTimeout(() => {
+        loadNPSHistory();
+      }, 1000); // Aumentei o delay para 1 segundo
 
     } catch (err) {
       console.error('Erro na API:', err);
@@ -205,7 +237,6 @@ const NPSSystem = () => {
     fill: planColors[plan].chart,
   }));
 
-  
   const ScoreTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
@@ -222,6 +253,24 @@ const NPSSystem = () => {
     return null;
   };
 
+  const HistoryTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-white p-4 rounded-xl shadow-lg border-2 border-gray-200 text-gray-700">
+          <div className="font-bold text-lg mb-2">{label}</div>
+          <div className="space-y-1">
+            {payload.map((entry, index) => (
+              <div key={index} style={{ color: entry.color }}>
+                {entry.name}: {entry.value}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
+
   // Filtrar dados da tabela
   const filteredTableData = useMemo(() => {
     if (filterPlan === 'all') return csvData;
@@ -231,7 +280,7 @@ const NPSSystem = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50">
       <div className="max-w-7xl mx-auto p-6 space-y-8">
-        {/* Header melhorado */}
+        {/* Header */}
         <div className="text-center py-16 bg-gradient-to-r from-blue-600 via-purple-600 to-blue-800 rounded-3xl text-white shadow-2xl">
           <div className="flex justify-center items-center gap-4 mb-6">
             <div className="p-4 bg-white/20 rounded-2xl backdrop-blur-sm">
@@ -241,7 +290,6 @@ const NPSSystem = () => {
           </div>
           <p className="text-2xl opacity-90 mb-8">Net Promoter Score - Análise Avançada de Satisfação</p>
           
-          {/* Indicadores de status melhorados */}
           <div className="flex justify-center gap-8 text-lg font-semibold">
             <div className="flex items-center gap-3 bg-white/20 px-6 py-3 rounded-full backdrop-blur-sm">
               <div className="w-4 h-4 bg-gray-300 rounded-full"></div>
@@ -274,7 +322,7 @@ const NPSSystem = () => {
           )}
         </div>
 
-        {/* Upload Section melhorada */}
+        {/* Upload Section */}
         <div className="bg-white rounded-3xl shadow-2xl p-10 border border-gray-100">
           <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-6 mb-8">
             <h2 className="text-4xl font-bold flex items-center gap-4 text-gray-800">
@@ -299,7 +347,7 @@ const NPSSystem = () => {
                     className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl shadow-lg hover:from-green-600 hover:to-green-700 transition-all hover:scale-105"
                   >
                     <Download className="h-5 w-5" />
-                    Exportar Análise Completa
+                    Exportar Análise
                   </button>
                 </>
               )}
@@ -346,7 +394,7 @@ const NPSSystem = () => {
           </div>
         </div>
 
-        {/* Upload History melhorado */}
+        {/* Upload History */}
         {uploadHistory.length > 0 && (
           <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
             <h3 className="text-2xl font-bold mb-6 flex items-center gap-3">
@@ -371,7 +419,7 @@ const NPSSystem = () => {
           </div>
         )}
 
-        {/* Insights Automáticos melhorados */}
+        {/* Insights Automáticos */}
         {insights.length > 0 && (
           <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
             <h3 className="text-3xl font-bold mb-8 flex items-center gap-4 text-gray-800">
@@ -402,7 +450,7 @@ const NPSSystem = () => {
           </div>
         )}
 
-        {/* NPS Score Principal melhorado */}
+        {/* NPS Score Principal */}
         {npsResults && (
           <div className="flex justify-center mb-12">
             <div className={`${getNPSGradient(npsResults.nps)} rounded-full p-12 shadow-2xl transform hover:scale-105 transition-transform`}>
@@ -676,40 +724,107 @@ const NPSSystem = () => {
               </div>
             )}
 
-            {/* Evolução Temporal */}
-            <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100 lg:col-span-2">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-2xl font-bold flex items-center gap-3 text-gray-800">
-                  <div className="p-3 bg-pink-100 rounded-xl">
-                    <TrendingUp className="text-pink-600 h-6 w-6" />
+            {/* Evolução Temporal - AGORA COM DADOS REAIS */}
+            {npsHistoryData.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100 lg:col-span-2">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold flex items-center gap-3 text-gray-800">
+                    <div className="p-3 bg-pink-100 rounded-xl">
+                      <TrendingUp className="text-pink-600 h-6 w-6" />
+                    </div>
+                    Evolução Temporal do NPS
+                    {isLoadingHistory && (
+                      <Loader className="h-5 w-5 text-blue-500 animate-spin ml-2" />
+                    )}
+                  </h3>
+                  <select
+                    value={selectedPeriod}
+                    onChange={(e) => setSelectedPeriod(e.target.value)}
+                    className="px-4 py-2 border-2 rounded-xl text-gray-700 bg-white font-semibold hover:border-blue-400 focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="all">Todo o período</option>
+                    <option value="7d">Últimos 7 dias</option>
+                    <option value="30d">Últimos 30 dias</option>
+                    <option value="90d">Últimos 90 dias</option>
+                  </select>
+                </div>
+                <ResponsiveContainer width="100%" height={350}>
+                  <LineChart data={npsHistoryData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="date" />
+                    <YAxis />
+                    <Tooltip content={<HistoryTooltip />} />
+                    <Line 
+                      type="monotone" 
+                      dataKey="FREE" 
+                      stroke={planColors['FREE'].chart} 
+                      strokeWidth={4} 
+                      name="FREE"
+                      dot={{ r: 5 }}
+                      activeDot={{ r: 8 }}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="LITE" 
+                      stroke={planColors['LITE'].chart} 
+                      strokeWidth={4}
+                      name="LITE"
+                      dot={{ r: 5 }}
+                      activeDot={{ r: 8 }}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="PRO" 
+                      stroke={planColors['PRO'].chart} 
+                      strokeWidth={4}
+                      name="PRO"
+                      dot={{ r: 5 }}
+                      activeDot={{ r: 8 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+                <div className="mt-4 flex items-center justify-between">
+                  <p className="text-sm text-gray-600 bg-green-50 p-3 rounded-lg border border-green-200">
+                    <strong>✅ Dados Reais:</strong> Mostrando {npsHistoryData.length} registro(s) de upload(s) realizados.
+                  </p>
+                  <div className="flex gap-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['FREE'].chart }}></div>
+                      <span className="text-sm font-semibold">FREE</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['LITE'].chart }}></div>
+                      <span className="text-sm font-semibold">LITE</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['PRO'].chart }}></div>
+                      <span className="text-sm font-semibold">PRO</span>
+                    </div>
                   </div>
-                  Evolução Temporal do NPS (Dados de Exemplo)
-                </h3>
-                <select
-                  value={selectedPeriod}
-                  onChange={(e) => setSelectedPeriod(e.target.value)}
-                  className="px-4 py-2 border-2 rounded-xl text-gray-700 bg-white font-semibold hover:border-blue-400 focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="all">Todo o período</option>
-                  <option value="30d">Últimos 30 dias</option>
-                  <option value="90d">Últimos 90 dias</option>
-                </select>
+                </div>
               </div>
-              <ResponsiveContainer width="100%" height={350}>
-                <LineChart data={mockHistoryByPlan} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" />
-                  <YAxis />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="FREE" stroke={planColors['FREE'].chart} strokeWidth={4} />
-                  <Line type="monotone" dataKey="LITE" stroke={planColors['LITE'].chart} strokeWidth={4} />
-                  <Line type="monotone" dataKey="PRO" stroke={planColors['PRO'].chart} strokeWidth={4} />
-                </LineChart>
-              </ResponsiveContainer>
-              <p className="text-sm text-gray-500 mt-4 bg-gray-50 p-3 rounded-lg">
-                <strong>Nota:</strong> Dados simulados para demonstração da funcionalidade de acompanhamento temporal.
-              </p>
-            </div>
+            )}
+
+            {/* Mensagem quando não há histórico */}
+            {npsResults && npsHistoryData.length === 0 && !isLoadingHistory && (
+              <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100 lg:col-span-2">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold flex items-center gap-3 text-gray-800">
+                    <div className="p-3 bg-pink-100 rounded-xl">
+                      <TrendingUp className="text-pink-600 h-6 w-6" />
+                    </div>
+                    Evolução Temporal do NPS
+                  </h3>
+                </div>
+                <div className="text-center py-16">
+                  <div className="p-6 bg-blue-50 rounded-full w-32 h-32 mx-auto mb-6 flex items-center justify-center">
+                    <TrendingUp className="h-16 w-16 text-blue-400" />
+                  </div>
+                  <p className="text-xl text-gray-600 mb-2">Nenhum histórico disponível ainda</p>
+                  <p className="text-gray-500">Faça mais uploads para visualizar a evolução temporal do NPS</p>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -903,7 +1018,7 @@ const NPSSystem = () => {
             </div>
           </div>
           <div className="mt-6 text-xs text-gray-400">
-            Desenvolvido com React + Node.js + Express | Frontend/Backend integrado | v2.1
+            Desenvolvido com React + Node.js + Express | Frontend/Backend integrado | v2.5 - Histórico Real
           </div>
         </div>
       </div>

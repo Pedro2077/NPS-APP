@@ -11,8 +11,8 @@ const PORT = process.env.PORT || 5000;
 // Middlewares
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? ['https://seu-dominio.com'] // Substitua pelo seu domínio em produção
-    : ['http://localhost:3000'], // Frontend React
+    ? ['https://seu-dominio.com']
+    : ['http://localhost:3000'],
   credentials: true
 }));
 
@@ -22,6 +22,9 @@ app.use(express.json());
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../build')));
 }
+
+// Armazenamento em memória para histórico de uploads
+let npsHistory = [];
 
 // Configuração do multer para upload de arquivos
 const storage = multer.diskStorage({
@@ -41,7 +44,6 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   fileFilter: (req, file, cb) => {
-    // Verificar tipo de arquivo
     const allowedMimeTypes = ['text/csv', 'application/csv', 'text/plain'];
     const isCSV = allowedMimeTypes.includes(file.mimetype) || 
                   file.originalname.toLowerCase().endsWith('.csv');
@@ -86,7 +88,6 @@ function calculateNPS(data) {
   const nps = Math.round(promoterPercentage - detractorPercentage);
   const averageScore = total > 0 ? scores.reduce((a, b) => a + b, 0) / total : 0;
 
-  // Calcular mediana
   const sortedScores = [...scores].sort((a, b) => a - b);
   const median = total % 2 === 0
     ? (sortedScores[total / 2 - 1] + sortedScores[total / 2]) / 2
@@ -149,18 +150,15 @@ function generateInsights(npsResults, npsResultsByPlan) {
 
   if (planEntries.length === 0) return insights;
 
-  // Melhor e pior plano
   const bestPlan = planEntries.reduce((a, b) => a[1].nps > b[1].nps ? a : b);
   const worstPlan = planEntries.reduce((a, b) => a[1].nps < b[1].nps ? a : b);
 
-  // Insight sobre melhor plano
   insights.push({
     type: 'success',
     icon: '🚀',
     message: `Plano ${bestPlan[0]} lidera com NPS ${bestPlan[1].nps} (${bestPlan[1].total} usuários)`
   });
 
-  // Insight sobre plano que precisa atenção
   if (worstPlan[1].nps < 30) {
     insights.push({
       type: 'warning',
@@ -169,7 +167,6 @@ function generateInsights(npsResults, npsResultsByPlan) {
     });
   }
 
-  // Insight sobre detratores
   if (npsResults.detractorPercentage > 30) {
     insights.push({
       type: 'error',
@@ -178,7 +175,6 @@ function generateInsights(npsResults, npsResultsByPlan) {
     });
   }
 
-  // Insight sobre promotores
   if (npsResults.promoterPercentage > 60) {
     insights.push({
       type: 'success',
@@ -187,7 +183,6 @@ function generateInsights(npsResults, npsResultsByPlan) {
     });
   }
 
-  // Insight sobre média
   if (Number(npsResults.averageScore) > 8.5) {
     insights.push({
       type: 'success',
@@ -197,6 +192,39 @@ function generateInsights(npsResults, npsResultsByPlan) {
   }
 
   return insights;
+}
+
+// Função para adicionar ao histórico
+function addToHistory(csvData, npsResultsByPlan) {
+  const currentDate = new Date().toISOString().split('T')[0];
+  
+  const historyEntry = {
+    date: currentDate,
+    timestamp: new Date().toISOString(),
+    FREE: npsResultsByPlan['FREE']?.nps || 0,
+    LITE: npsResultsByPlan['LITE']?.nps || 0,
+    PRO: npsResultsByPlan['PRO']?.nps || 0,
+    totalRecords: csvData.length
+  };
+
+  // Verificar se já existe entrada para esta data
+  const existingIndex = npsHistory.findIndex(entry => entry.date === currentDate);
+  
+  if (existingIndex !== -1) {
+    // Atualizar entrada existente
+    npsHistory[existingIndex] = historyEntry;
+  } else {
+    // Adicionar nova entrada
+    npsHistory.push(historyEntry);
+  }
+
+  // Manter apenas os últimos 30 registros
+  npsHistory = npsHistory
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, 30)
+    .reverse(); // Ordenar do mais antigo para o mais recente
+
+  console.log(`📊 Histórico atualizado: ${npsHistory.length} entradas`);
 }
 
 // Rota de upload e processamento do CSV
@@ -215,7 +243,6 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
     console.log(`📄 Processando arquivo: ${req.file.originalname}`);
     console.log(`📊 Tamanho: ${(req.file.size / 1024).toFixed(2)} KB`);
 
-    // Ler e processar o CSV
     fs.createReadStream(filePath)
       .pipe(parse({
         columns: true,
@@ -225,14 +252,12 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
       }))
       .on('data', (row) => {
         try {
-          // Normalizar e validar os dados
           const cleanRow = {};
           Object.keys(row).forEach(key => {
             const cleanKey = key.trim().toLowerCase();
             cleanRow[cleanKey] = row[key]?.trim();
           });
 
-          // Validar campos obrigatórios
           const nota = Number(cleanRow.nota);
           const plano = cleanRow.plano?.toUpperCase();
 
@@ -252,14 +277,12 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
       })
       .on('end', () => {
         try {
-          // Limpar arquivo temporário
           if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
           }
 
           console.log(`✅ Arquivo processado: ${csvData.length} registros válidos`);
 
-          // Validar se há dados válidos
           if (csvData.length === 0) {
             return res.status(400).json({
               success: false,
@@ -267,12 +290,13 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
             });
           }
 
-          // Calcular métricas NPS
           const npsResults = calculateNPS(csvData);
           const npsResultsByPlan = calculateNPSByPlan(csvData);
           const insights = generateInsights(npsResults, npsResultsByPlan);
 
-          // Calcular distribuição de notas
+          // Adicionar ao histórico
+          addToHistory(csvData, npsResultsByPlan);
+
           const scoreDistribution = {};
           for (let i = 0; i <= 10; i++) scoreDistribution[i] = 0;
           
@@ -288,7 +312,6 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
             category: Number(score) >= 9 ? 'Promotor' : Number(score) >= 7 ? 'Neutro' : 'Detrator'
           }));
 
-          // Calcular percentuais por plano
           const validPlansArray = ['FREE', 'LITE', 'PRO'];
           const planCounts = { FREE: 0, LITE: 0, PRO: 0 };
           
@@ -311,7 +334,6 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
           console.log(`📈 NPS Geral: ${npsResults.nps}`);
           console.log(`👥 Distribuição por plano:`, Object.keys(planPercentages));
 
-          // Resposta com todos os dados processados
           res.json({
             success: true,
             data: {
@@ -336,7 +358,6 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
         }
       })
       .on('error', (error) => {
-        // Limpar arquivo em caso de erro
         if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
         }
@@ -357,20 +378,57 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
   }
 });
 
-// Rota de exemplo para histórico (mock data)
+// Rota para obter histórico NPS (agora com dados reais)
 app.get('/api/nps-history', (req, res) => {
-  const mockHistory = [
-    { date: '2024-12-25', FREE: 22, LITE: 40, PRO: 59 },
-    { date: '2025-01-01', FREE: 28, LITE: 38, PRO: 62 },
-    { date: '2025-01-08', FREE: 30, LITE: 42, PRO: 68 },
-    { date: '2025-01-15', FREE: 25, LITE: 45, PRO: 65 },
-    { date: '2025-01-22', FREE: 32, LITE: 47, PRO: 70 },
-    { date: '2025-01-29', FREE: 35, LITE: 50, PRO: 72 },
-  ];
+  const { period } = req.query;
+  let filteredHistory = [...npsHistory];
+
+  console.log(`📊 Requisição de histórico recebida. Período: ${period || 'all'}`);
+  console.log(`📊 Total de entradas no histórico: ${npsHistory.length}`);
+
+  if (period && period !== 'all') {
+    const now = new Date();
+    let daysToSubtract = 0;
+
+    switch(period) {
+      case '7d':
+        daysToSubtract = 7;
+        break;
+      case '30d':
+        daysToSubtract = 30;
+        break;
+      case '90d':
+        daysToSubtract = 90;
+        break;
+      default:
+        daysToSubtract = 0;
+    }
+
+    if (daysToSubtract > 0) {
+      const cutoffDate = new Date(now.getTime() - (daysToSubtract * 24 * 60 * 60 * 1000));
+      filteredHistory = filteredHistory.filter(entry => new Date(entry.date) >= cutoffDate);
+      console.log(`📊 Histórico filtrado: ${filteredHistory.length} entradas após ${daysToSubtract} dias`);
+    }
+  }
+
+  console.log(`📊 Enviando histórico:`, filteredHistory);
 
   res.json({
     success: true,
-    data: mockHistory
+    data: filteredHistory,
+    totalEntries: filteredHistory.length,
+    period: period || 'all'
+  });
+});
+
+// Rota para limpar histórico (útil para testes)
+app.delete('/api/nps-history', (req, res) => {
+  npsHistory = [];
+  console.log('🗑️ Histórico limpo');
+  
+  res.json({
+    success: true,
+    message: 'Histórico limpo com sucesso'
   });
 });
 
@@ -380,7 +438,8 @@ app.get('/api/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    historyEntries: npsHistory.length
   });
 });
 
@@ -430,11 +489,12 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Servidor NPS Backend rodando na porta ${PORT}`);
   console.log(`📊 API disponível em: http://localhost:${PORT}/api`);
   console.log(`🏥 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`📈 Histórico NPS: http://localhost:${PORT}/api/nps-history`);
   console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`);
   console.log('🚀 ===================================');
 });
 
-// Tratamento de encerramento gracioso
+// Tratamento de encerramento 
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM recebido. Encerrando servidor...');
   server.close(() => {
