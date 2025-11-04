@@ -314,7 +314,12 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
         columns: true,
         skip_empty_lines: true,
         delimiter: ',',
-        trim: true
+        trim: true,
+        relax_column_count: true, // Permite colunas irregulares
+        quote: '"', // Reconhece aspas duplas
+        escape: '"', // Permite escapar aspas
+        relax_quotes: true, // Mais flexível com aspas
+        cast: false // Não tenta converter tipos automaticamente
       }))
       .on('data', (row) => {
         try {
@@ -324,18 +329,32 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
             cleanRow[cleanKey] = row[key]?.trim();
           });
 
+          // Juntar comentário se foi quebrado em várias colunas
+          let comentario = cleanRow.comentario || '';
+          const extraColumns = Object.keys(row).filter(k => !['data', 'cliente', 'usuario', 'nota', 'comentario', 'plano'].includes(k.trim().toLowerCase()));
+          if (extraColumns.length > 0) {
+            // Provavelmente o comentário foi quebrado
+            const allValues = Object.values(row);
+            const knownFields = [cleanRow.data, cleanRow.cliente, cleanRow.usuario, cleanRow.nota];
+            const plano = allValues[allValues.length - 1]; // Plano sempre é o último
+            
+            // Pegar tudo entre nota e plano como comentário
+            const comentarioParts = allValues.slice(4, allValues.length - 1);
+            comentario = comentarioParts.join(',').trim();
+          }
+
           const nota = Number(cleanRow.nota);
           const plano = cleanRow.plano?.toUpperCase();
           const data = parseDate(cleanRow.data);
 
           if (!isNaN(nota) && nota >= 0 && nota <= 10 && plano && ['FREE', 'LITE', 'PRO'].includes(plano)) {
             csvData.push({
-              data: data, // Data parseada e formatada
-              dataOriginal: cleanRow.data || '', // Data original do CSV
+              data: data,
+              dataOriginal: cleanRow.data || '',
               cliente: cleanRow.cliente || '',
               usuario: cleanRow.usuario || '',
               nota: cleanRow.nota,
-              comentario: cleanRow.comentario || '',
+              comentario: comentario || '',
               plano: plano
             });
           }
