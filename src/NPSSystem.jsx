@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Upload, FileText, BarChart3, TrendingUp, Users, AlertCircle, 
   Award, Target, Download, Lightbulb, Activity, CheckCircle2,
-  RefreshCw, Eye, EyeOff, Filter, ArrowUp, Loader
+  RefreshCw, Eye, EyeOff, Filter, ArrowUp, Loader, Calendar
 } from 'lucide-react';
 import { 
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, 
@@ -26,6 +26,7 @@ const NPSSystem = () => {
   const [apiUrl] = useState('http://localhost:5000/api');
   const [npsHistoryData, setNpsHistoryData] = useState([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [uniqueDatesCount, setUniqueDatesCount] = useState(0);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -70,8 +71,14 @@ const NPSSystem = () => {
       console.log('📊 Resposta do histórico:', result);
 
       if (result.success && result.data && result.data.length > 0) {
-        setNpsHistoryData(result.data);
-        console.log(`✅ Histórico carregado: ${result.data.length} registros`, result.data);
+        // Formatar datas para exibição (DD/MM/YYYY)
+        const formattedData = result.data.map(entry => ({
+          ...entry,
+          displayDate: formatDateForDisplay(entry.date)
+        }));
+        
+        setNpsHistoryData(formattedData);
+        console.log(`✅ Histórico carregado: ${result.data.length} registros`, formattedData);
       } else {
         setNpsHistoryData([]);
         console.log('⚠️ Nenhum histórico disponível no backend');
@@ -81,6 +88,16 @@ const NPSSystem = () => {
       setNpsHistoryData([]);
     } finally {
       setIsLoadingHistory(false);
+    }
+  };
+
+  // Função para formatar data para exibição
+  const formatDateForDisplay = (dateString) => {
+    try {
+      const [year, month, day] = dateString.split('-');
+      return `${day}/${month}/${year}`;
+    } catch {
+      return dateString;
     }
   };
 
@@ -96,6 +113,7 @@ const NPSSystem = () => {
     setShowDataTable(false);
     setFilterPlan('all');
     setNpsHistoryData([]);
+    setUniqueDatesCount(0);
   };
 
   // Upload & Process CSV via API
@@ -138,12 +156,14 @@ const NPSSystem = () => {
       setPlanPercentages(data.planPercentages);
       setInsights(data.insights);
       setShowDataTable(true);
+      setUniqueDatesCount(data.uniqueDates || 0);
       
       setUploadHistory(prev => [{
         date: new Date().toISOString().split('T')[0],
         time: new Date().toLocaleTimeString('pt-BR'),
         fileName: file.name,
         totalRecords: data.totalRecords,
+        uniqueDates: data.uniqueDates || 0,
         id: Date.now(),
       }, ...prev.slice(0, 4)]);
 
@@ -151,7 +171,7 @@ const NPSSystem = () => {
       console.log('🔄 Carregando histórico após upload...');
       setTimeout(() => {
         loadNPSHistory();
-      }, 1000); // Aumentei o delay para 1 segundo
+      }, 1000);
 
     } catch (err) {
       console.error('Erro na API:', err);
@@ -255,12 +275,20 @@ const NPSSystem = () => {
 
   const HistoryTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
+      // Encontrar dados completos para esta data
+      const dataEntry = npsHistoryData.find(entry => entry.displayDate === label);
+      
       return (
         <div className="bg-white p-4 rounded-xl shadow-lg border-2 border-gray-200 text-gray-700">
-          <div className="font-bold text-lg mb-2">{label}</div>
+          <div className="font-bold text-lg mb-3">{label}</div>
+          {dataEntry && (
+            <div className="text-sm text-gray-600 mb-2">
+              {dataEntry.totalRecords} registro(s)
+            </div>
+          )}
           <div className="space-y-1">
             {payload.map((entry, index) => (
-              <div key={index} style={{ color: entry.color }}>
+              <div key={index} style={{ color: entry.color }} className="font-semibold">
                 {entry.name}: {entry.value}
               </div>
             ))}
@@ -311,6 +339,12 @@ const NPSSystem = () => {
                 <CheckCircle2 className="h-6 w-6 inline mr-3" />
                 <span className="text-xl font-semibold">{csvData.length} registros</span>
               </div>
+              {uniqueDatesCount > 0 && (
+                <div className="bg-white/25 backdrop-blur-sm px-6 py-3 rounded-xl">
+                  <Calendar className="h-6 w-6 inline mr-3" />
+                  <span className="text-xl font-semibold">{uniqueDatesCount} data(s) única(s)</span>
+                </div>
+              )}
               <div className="bg-white/25 backdrop-blur-sm px-6 py-3 rounded-xl">
                 <Activity className="h-6 w-6 inline mr-3" />
                 <span className="text-xl font-semibold">NPS: {npsResults?.nps || 0}</span>
@@ -410,6 +444,11 @@ const NPSSystem = () => {
                   <div className="text-xs text-gray-500 mb-3">{upload.time}</div>
                   <div className="font-bold text-2xl text-gray-800">{upload.totalRecords}</div>
                   <div className="text-sm text-gray-600">registros</div>
+                  {upload.uniqueDates > 0 && (
+                    <div className="text-xs text-blue-600 mt-2 font-semibold">
+                      {upload.uniqueDates} data(s) única(s)
+                    </div>
+                  )}
                   <div className="text-xs text-gray-500 mt-2 truncate" title={upload.fileName}>
                     {upload.fileName}
                   </div>
@@ -724,83 +763,130 @@ const NPSSystem = () => {
               </div>
             )}
 
-            {/* Evolução Temporal - AGORA COM DADOS REAIS */}
+            {/* Evolução Temporal - COM DATAS DO CSV */}
             {npsHistoryData.length > 0 && (
               <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100 lg:col-span-2">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-2xl font-bold flex items-center gap-3 text-gray-800">
-                    <div className="p-3 bg-pink-100 rounded-xl">
-                      <TrendingUp className="text-pink-600 h-6 w-6" />
+                <div className="flex flex-col gap-4 mb-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-2xl font-bold flex items-center gap-3 text-gray-800">
+                      <div className="p-3 bg-pink-100 rounded-xl">
+                        <TrendingUp className="text-pink-600 h-6 w-6" />
+                      </div>
+                      Evolução Temporal do NPS (Por Data do CSV)
+                      {isLoadingHistory && (
+                        <Loader className="h-5 w-5 text-blue-500 animate-spin ml-2" />
+                      )}
+                    </h3>
+                    <select
+                      value={selectedPeriod}
+                      onChange={(e) => setSelectedPeriod(e.target.value)}
+                      className="px-4 py-2 border-2 rounded-xl text-gray-700 bg-white font-semibold hover:border-blue-400 focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="all">Todo o período</option>
+                      <option value="7d">Últimos 7 dias</option>
+                      <option value="30d">Últimos 30 dias</option>
+                      <option value="90d">Últimos 90 dias</option>
+                    </select>
+                  </div>
+                  
+                  {npsHistoryData.length > 20 && (
+                    <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4">
+                      <p className="text-blue-800 font-semibold">
+                        💡 <strong>Dica:</strong> Com {npsHistoryData.length} pontos de dados, use os filtros de período acima para melhor visualização (7, 30 ou 90 dias).
+                      </p>
                     </div>
-                    Evolução Temporal do NPS
-                    {isLoadingHistory && (
-                      <Loader className="h-5 w-5 text-blue-500 animate-spin ml-2" />
-                    )}
-                  </h3>
-                  <select
-                    value={selectedPeriod}
-                    onChange={(e) => setSelectedPeriod(e.target.value)}
-                    className="px-4 py-2 border-2 rounded-xl text-gray-700 bg-white font-semibold hover:border-blue-400 focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value="all">Todo o período</option>
-                    <option value="7d">Últimos 7 dias</option>
-                    <option value="30d">Últimos 30 dias</option>
-                    <option value="90d">Últimos 90 dias</option>
-                  </select>
+                  )}
                 </div>
-                <ResponsiveContainer width="100%" height={350}>
-                  <LineChart data={npsHistoryData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
+                
+                <ResponsiveContainer width="100%" height={450}>
+                  <LineChart data={npsHistoryData} margin={{ top: 20, right: 30, left: 20, bottom: 80 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis 
+                      dataKey="displayDate" 
+                      angle={-45}
+                      textAnchor="end"
+                      height={80}
+                      interval={Math.max(0, Math.floor(npsHistoryData.length / 15))}
+                      tick={{ fontSize: 11 }}
+                    />
+                    <YAxis 
+                      domain={[-100, 100]}
+                      ticks={[-100, -50, 0, 50, 100]}
+                      tick={{ fontSize: 12 }}
+                    />
                     <Tooltip content={<HistoryTooltip />} />
                     <Line 
                       type="monotone" 
                       dataKey="FREE" 
                       stroke={planColors['FREE'].chart} 
-                      strokeWidth={4} 
+                      strokeWidth={3} 
                       name="FREE"
-                      dot={{ r: 5 }}
-                      activeDot={{ r: 8 }}
+                      dot={npsHistoryData.length <= 30 ? { r: 4 } : false}
+                      activeDot={{ r: 6 }}
+                      connectNulls
                     />
                     <Line 
                       type="monotone" 
                       dataKey="LITE" 
                       stroke={planColors['LITE'].chart} 
-                      strokeWidth={4}
+                      strokeWidth={3}
                       name="LITE"
-                      dot={{ r: 5 }}
-                      activeDot={{ r: 8 }}
+                      dot={npsHistoryData.length <= 30 ? { r: 4 } : false}
+                      activeDot={{ r: 6 }}
+                      connectNulls
                     />
                     <Line 
                       type="monotone" 
                       dataKey="PRO" 
                       stroke={planColors['PRO'].chart} 
-                      strokeWidth={4}
+                      strokeWidth={3}
                       name="PRO"
-                      dot={{ r: 5 }}
-                      activeDot={{ r: 8 }}
+                      dot={npsHistoryData.length <= 30 ? { r: 4 } : false}
+                      activeDot={{ r: 6 }}
+                      connectNulls
                     />
                   </LineChart>
                 </ResponsiveContainer>
-                <div className="mt-4 flex items-center justify-between">
-                  <p className="text-sm text-gray-600 bg-green-50 p-3 rounded-lg border border-green-200">
-                    <strong>✅ Dados Reais:</strong> Mostrando {npsHistoryData.length} registro(s) de upload(s) realizados.
-                  </p>
-                  <div className="flex gap-4">
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['FREE'].chart }}></div>
-                      <span className="text-sm font-semibold">FREE</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['LITE'].chart }}></div>
-                      <span className="text-sm font-semibold">LITE</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['PRO'].chart }}></div>
-                      <span className="text-sm font-semibold">PRO</span>
+                
+                <div className="mt-6 space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-4">
+                    <p className="text-sm text-gray-600 bg-green-50 p-3 rounded-lg border border-green-200">
+                      <strong>✅ Usando datas do CSV:</strong> {npsHistoryData.length} ponto(s) de dados baseados nas datas reais das avaliações.
+                    </p>
+                    <div className="flex gap-4">
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['FREE'].chart }}></div>
+                        <span className="text-sm font-semibold">FREE</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['LITE'].chart }}></div>
+                        <span className="text-sm font-semibold">LITE</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 rounded-full" style={{ backgroundColor: planColors['PRO'].chart }}></div>
+                        <span className="text-sm font-semibold">PRO</span>
+                      </div>
                     </div>
                   </div>
+                  
+                  {npsHistoryData.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <p className="text-xs text-gray-600 mb-1">Primeira Data</p>
+                        <p className="text-lg font-bold text-gray-800">{npsHistoryData[0].displayDate}</p>
+                      </div>
+                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <p className="text-xs text-gray-600 mb-1">Última Data</p>
+                        <p className="text-lg font-bold text-gray-800">{npsHistoryData[npsHistoryData.length - 1].displayDate}</p>
+                      </div>
+                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <p className="text-xs text-gray-600 mb-1">Período Total</p>
+                        <p className="text-lg font-bold text-gray-800">
+                          {Math.ceil((new Date(npsHistoryData[npsHistoryData.length - 1].date) - new Date(npsHistoryData[0].date)) / (1000 * 60 * 60 * 24))} dias
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -821,7 +907,7 @@ const NPSSystem = () => {
                     <TrendingUp className="h-16 w-16 text-blue-400" />
                   </div>
                   <p className="text-xl text-gray-600 mb-2">Nenhum histórico disponível ainda</p>
-                  <p className="text-gray-500">Faça mais uploads para visualizar a evolução temporal do NPS</p>
+                  <p className="text-gray-500">Faça uploads com campo "data" preenchido para visualizar a evolução temporal</p>
                 </div>
               </div>
             )}
@@ -864,7 +950,7 @@ const NPSSystem = () => {
                   Campos opcionais:
                 </p>
                 <ul className="text-amber-700 space-y-2 text-lg">
-                  <li>• <strong>data:</strong> Data da avaliação</li>
+                  <li>• <strong>data:</strong> Data da avaliação (DD-MM-YYYY ou YYYY-MM-DD)</li>
                   <li>• <strong>cliente:</strong> ID do cliente</li>
                   <li>• <strong>usuario:</strong> Nome do usuário</li>
                   <li>• <strong>comentario:</strong> Feedback textual</li>
@@ -876,6 +962,8 @@ const NPSSystem = () => {
               <ul className="text-amber-800 space-y-2">
                 <li>• Notas devem estar entre 0 e 10 (números inteiros ou decimais)</li>
                 <li>• Planos devem ser exatamente: FREE, LITE ou PRO (maiúsculas)</li>
+                <li>• <strong>Campo "data":</strong> Use formato DD-MM-YYYY ou YYYY-MM-DD para melhor compatibilidade</li>
+                <li>• <strong>Histórico temporal:</strong> Com o campo "data" preenchido, você pode ter múltiplos pontos no gráfico mesmo fazendo um único upload</li>
                 <li>• Tamanho máximo do arquivo: 5MB</li>
                 <li>• Codificação recomendada: UTF-8</li>
               </ul>
@@ -941,7 +1029,7 @@ const NPSSystem = () => {
                       return (
                         <tr key={index} className="hover:bg-gray-50 transition-colors">
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                            {row.data?.split(' ')[0] || 'N/A'}
+                            {row.data ? formatDateForDisplay(row.data) : 'N/A'}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                             {row.cliente || 'N/A'}
@@ -1018,7 +1106,7 @@ const NPSSystem = () => {
             </div>
           </div>
           <div className="mt-6 text-xs text-gray-400">
-            Desenvolvido com React + Node.js + Express | Frontend/Backend integrado | v2.5 - Histórico Real
+            Desenvolvido com React + Node.js + Express | Frontend/Backend integrado | v3.0 - Histórico com Datas do CSV
           </div>
         </div>
       </div>

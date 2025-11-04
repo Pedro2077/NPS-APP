@@ -59,6 +59,47 @@ const upload = multer({
   }
 });
 
+// Função auxiliar para parsear data
+function parseDate(dateString) {
+  if (!dateString) return null;
+  
+  // Remove espaços e normaliza separadores
+  const normalized = dateString.trim().replace(/[\/\-]/g, '-');
+  
+  // Tenta vários formatos comuns
+  const formats = [
+    /^(\d{4})-(\d{2})-(\d{2})/, // YYYY-MM-DD
+    /^(\d{2})-(\d{2})-(\d{4})/, // DD-MM-YYYY
+    /^(\d{2})-(\d{2})-(\d{2})/, // DD-MM-YY
+  ];
+  
+  for (const format of formats) {
+    const match = normalized.match(format);
+    if (match) {
+      if (match[1].length === 4) {
+        // YYYY-MM-DD
+        const date = new Date(match[1], match[2] - 1, match[3]);
+        if (!isNaN(date.getTime())) {
+          return date.toISOString().split('T')[0];
+        }
+      } else {
+        // DD-MM-YYYY ou DD-MM-YY
+        let year = match[3];
+        if (year.length === 2) {
+          year = (parseInt(year) > 50 ? '19' : '20') + year;
+        }
+        const date = new Date(year, match[2] - 1, match[1]);
+        if (!isNaN(date.getTime())) {
+          return date.toISOString().split('T')[0];
+        }
+      }
+    }
+  }
+  
+  // Se falhar, usa data atual
+  return new Date().toISOString().split('T')[0];
+}
+
 // Função para calcular NPS geral
 function calculateNPS(data) {
   const scores = data.map(row => Number(row.nota)).filter(score => !isNaN(score) && score >= 0 && score <= 10);
@@ -194,37 +235,62 @@ function generateInsights(npsResults, npsResultsByPlan) {
   return insights;
 }
 
-// Função para adicionar ao histórico
-function addToHistory(csvData, npsResultsByPlan) {
-  const currentDate = new Date().toISOString().split('T')[0];
+// Função NOVA para adicionar ao histórico usando datas do CSV
+function addToHistoryFromCSV(csvData) {
+  // Agrupar dados por data
+  const dataByDate = {};
   
-  const historyEntry = {
-    date: currentDate,
-    timestamp: new Date().toISOString(),
-    FREE: npsResultsByPlan['FREE']?.nps || 0,
-    LITE: npsResultsByPlan['LITE']?.nps || 0,
-    PRO: npsResultsByPlan['PRO']?.nps || 0,
-    totalRecords: csvData.length
-  };
-
-  // Verificar se já existe entrada para esta data
-  const existingIndex = npsHistory.findIndex(entry => entry.date === currentDate);
+  csvData.forEach(row => {
+    const date = parseDate(row.data);
+    if (!dataByDate[date]) {
+      dataByDate[date] = [];
+    }
+    dataByDate[date].push(row);
+  });
   
-  if (existingIndex !== -1) {
-    // Atualizar entrada existente
-    npsHistory[existingIndex] = historyEntry;
-  } else {
-    // Adicionar nova entrada
-    npsHistory.push(historyEntry);
-  }
-
-  // Manter apenas os últimos 30 registros
-  npsHistory = npsHistory
-    .sort((a, b) => new Date(b.date) - new Date(a.date))
-    .slice(0, 30)
-    .reverse(); // Ordenar do mais antigo para o mais recente
-
-  console.log(`📊 Histórico atualizado: ${npsHistory.length} entradas`);
+  console.log(`📊 Datas encontradas no CSV: ${Object.keys(dataByDate).length}`);
+  
+  // Calcular NPS por plano para cada data
+  Object.entries(dataByDate).forEach(([date, dateData]) => {
+    const npsResultsByPlan = calculateNPSByPlan(dateData);
+    
+    const historyEntry = {
+      date: date,
+      timestamp: new Date(date).toISOString(),
+      FREE: npsResultsByPlan['FREE']?.nps || 0,
+      LITE: npsResultsByPlan['LITE']?.nps || 0,
+      PRO: npsResultsByPlan['PRO']?.nps || 0,
+      totalRecords: dateData.length
+    };
+    
+    // Verificar se já existe entrada para esta data
+    const existingIndex = npsHistory.findIndex(entry => entry.date === date);
+    
+    if (existingIndex !== -1) {
+      // Atualizar entrada existente (somar registros)
+      const existing = npsHistory[existingIndex];
+      const combinedData = [...dataByDate[date], ...csvData.filter(r => parseDate(r.data) === date)];
+      const combinedNPSByPlan = calculateNPSByPlan(combinedData);
+      
+      npsHistory[existingIndex] = {
+        date: date,
+        timestamp: new Date(date).toISOString(),
+        FREE: combinedNPSByPlan['FREE']?.nps || 0,
+        LITE: combinedNPSByPlan['LITE']?.nps || 0,
+        PRO: combinedNPSByPlan['PRO']?.nps || 0,
+        totalRecords: combinedData.length
+      };
+    } else {
+      // Adicionar nova entrada
+      npsHistory.push(historyEntry);
+    }
+  });
+  
+  // Ordenar por data (do mais antigo para o mais recente)
+  npsHistory = npsHistory.sort((a, b) => new Date(a.date) - new Date(b.date));
+  
+  console.log(`📊 Histórico atualizado: ${npsHistory.length} entradas únicas`);
+  console.log(`📊 Datas no histórico:`, npsHistory.map(h => h.date));
 }
 
 // Rota de upload e processamento do CSV
@@ -260,10 +326,12 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
 
           const nota = Number(cleanRow.nota);
           const plano = cleanRow.plano?.toUpperCase();
+          const data = parseDate(cleanRow.data);
 
           if (!isNaN(nota) && nota >= 0 && nota <= 10 && plano && ['FREE', 'LITE', 'PRO'].includes(plano)) {
             csvData.push({
-              data: cleanRow.data || '',
+              data: data, // Data parseada e formatada
+              dataOriginal: cleanRow.data || '', // Data original do CSV
               cliente: cleanRow.cliente || '',
               usuario: cleanRow.usuario || '',
               nota: cleanRow.nota,
@@ -294,8 +362,8 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
           const npsResultsByPlan = calculateNPSByPlan(csvData);
           const insights = generateInsights(npsResults, npsResultsByPlan);
 
-          // Adicionar ao histórico
-          addToHistory(csvData, npsResultsByPlan);
+          // NOVA FUNÇÃO: Adicionar ao histórico usando datas do CSV
+          addToHistoryFromCSV(csvData);
 
           const scoreDistribution = {};
           for (let i = 0; i <= 10; i++) scoreDistribution[i] = 0;
@@ -333,6 +401,7 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
 
           console.log(`📈 NPS Geral: ${npsResults.nps}`);
           console.log(`👥 Distribuição por plano:`, Object.keys(planPercentages));
+          console.log(`📅 Datas processadas:`, [...new Set(csvData.map(r => r.data))]);
 
           res.json({
             success: true,
@@ -345,7 +414,8 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
               planPercentages,
               totalRecords: csvData.length,
               fileName: req.file.originalname,
-              uploadDate: new Date().toISOString()
+              uploadDate: new Date().toISOString(),
+              uniqueDates: [...new Set(csvData.map(r => r.data))].length
             }
           });
 
@@ -378,12 +448,60 @@ app.post('/api/upload-csv', upload.single('csvFile'), async (req, res) => {
   }
 });
 
-// Rota para obter histórico NPS (agora com dados reais)
+// Função para agrupar dados por trimestre
+function aggregateByQuarter(history) {
+  const quarterData = {};
+  
+  history.forEach(entry => {
+    const date = new Date(entry.date);
+    const year = date.getFullYear();
+    const month = date.getMonth() + 1; // 1-12
+    const quarter = Math.ceil(month / 3);
+    const quarterKey = `Q${quarter} ${year}`;
+    
+    if (!quarterData[quarterKey]) {
+      quarterData[quarterKey] = {
+        date: quarterKey,
+        displayDate: quarterKey,
+        FREE: [],
+        LITE: [],
+        PRO: [],
+        totalRecords: 0,
+        firstDate: entry.date,
+        lastDate: entry.date
+      };
+    }
+    
+    // Acumular valores de NPS
+    if (entry.FREE !== 0) quarterData[quarterKey].FREE.push(entry.FREE);
+    if (entry.LITE !== 0) quarterData[quarterKey].LITE.push(entry.LITE);
+    if (entry.PRO !== 0) quarterData[quarterKey].PRO.push(entry.PRO);
+    quarterData[quarterKey].totalRecords += entry.totalRecords;
+    
+    // Atualizar última data
+    if (new Date(entry.date) > new Date(quarterData[quarterKey].lastDate)) {
+      quarterData[quarterKey].lastDate = entry.date;
+    }
+  });
+  
+  // Calcular médias
+  return Object.values(quarterData).map(q => ({
+    date: q.date,
+    displayDate: q.displayDate,
+    FREE: q.FREE.length > 0 ? Math.round(q.FREE.reduce((a, b) => a + b, 0) / q.FREE.length) : 0,
+    LITE: q.LITE.length > 0 ? Math.round(q.LITE.reduce((a, b) => a + b, 0) / q.LITE.length) : 0,
+    PRO: q.PRO.length > 0 ? Math.round(q.PRO.reduce((a, b) => a + b, 0) / q.PRO.length) : 0,
+    totalRecords: q.totalRecords,
+    timestamp: q.firstDate
+  })).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+}
+
+// Rota para obter histórico NPS (com filtro de período e agregação)
 app.get('/api/nps-history', (req, res) => {
-  const { period } = req.query;
+  const { period, aggregate } = req.query;
   let filteredHistory = [...npsHistory];
 
-  console.log(`📊 Requisição de histórico recebida. Período: ${period || 'all'}`);
+  console.log(`📊 Requisição de histórico recebida. Período: ${period || 'all'}, Agregação: ${aggregate || 'none'}`);
   console.log(`📊 Total de entradas no histórico: ${npsHistory.length}`);
 
   if (period && period !== 'all') {
@@ -411,13 +529,20 @@ app.get('/api/nps-history', (req, res) => {
     }
   }
 
-  console.log(`📊 Enviando histórico:`, filteredHistory);
+  // Aplicar agregação trimestral se solicitado
+  if (aggregate === 'quarterly' && filteredHistory.length > 0) {
+    filteredHistory = aggregateByQuarter(filteredHistory);
+    console.log(`📊 Agregação trimestral aplicada: ${filteredHistory.length} trimestres`);
+  }
+
+  console.log(`📊 Enviando histórico:`, filteredHistory.map(h => ({ date: h.date || h.displayDate, records: h.totalRecords })));
 
   res.json({
     success: true,
     data: filteredHistory,
     totalEntries: filteredHistory.length,
-    period: period || 'all'
+    period: period || 'all',
+    aggregated: aggregate === 'quarterly'
   });
 });
 
