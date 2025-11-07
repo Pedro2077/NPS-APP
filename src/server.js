@@ -4,9 +4,194 @@ const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 const { parse } = require("csv-parse");
+const Database = require("better-sqlite3");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// ============================================
+// CONFIGURAÇÃO DO SQLITE
+// ============================================
+
+const DATA_DIR = path.join(__dirname, "data");
+const DB_FILE = path.join(DATA_DIR, "nps-database.db");
+
+// Criar pasta data se não existir
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log("📁 Pasta 'data' criada");
+}
+
+// Inicializar banco de dados
+const db = new Database(DB_FILE);
+db.pragma("journal_mode = WAL"); // Melhor performance
+
+console.log(`💾 Banco de dados SQLite: ${DB_FILE}`);
+
+// Criar tabelas
+function initDatabase() {
+  // Tabela de histórico NPS
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS nps_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL UNIQUE,
+      timestamp TEXT NOT NULL,
+      nps_free INTEGER DEFAULT 0,
+      nps_lite INTEGER DEFAULT 0,
+      nps_pro INTEGER DEFAULT 0,
+      total_records INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Tabela de uploads (histórico de arquivos processados)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS uploads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL,
+      total_records INTEGER NOT NULL,
+      unique_dates INTEGER NOT NULL,
+      upload_date TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Tabela de avaliações individuais (opcional, mas útil)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS evaluations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      client_id TEXT,
+      user_name TEXT,
+      score INTEGER NOT NULL,
+      plan TEXT NOT NULL,
+      comment TEXT,
+      category TEXT NOT NULL,
+      upload_id INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (upload_id) REFERENCES uploads(id)
+    )
+  `);
+
+  // Índices para performance
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_nps_history_date ON nps_history(date);
+    CREATE INDEX IF NOT EXISTS idx_evaluations_date ON evaluations(date);
+    CREATE INDEX IF NOT EXISTS idx_evaluations_plan ON evaluations(plan);
+    CREATE INDEX IF NOT EXISTS idx_evaluations_score ON evaluations(score);
+  `);
+
+  console.log("✅ Tabelas do banco de dados inicializadas");
+}
+
+initDatabase();
+
+// Funções do banco de dados
+const dbQueries = {
+  // Inserir ou atualizar histórico NPS
+  upsertHistory: db.prepare(`
+    INSERT INTO nps_history (date, timestamp, nps_free, nps_lite, nps_pro, total_records, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(date) DO UPDATE SET
+      nps_free = excluded.nps_free,
+      nps_lite = excluded.nps_lite,
+      nps_pro = excluded.nps_pro,
+      total_records = total_records + excluded.total_records,
+      updated_at = CURRENT_TIMESTAMP
+  `),
+
+  // Buscar histórico completo
+  getHistory: db.prepare(`
+    SELECT * FROM nps_history ORDER BY date ASC
+  `),
+
+  // Buscar histórico por período
+  getHistoryByPeriod: db.prepare(`
+    SELECT * FROM nps_history 
+    WHERE date >= date('now', ?) 
+    ORDER BY date ASC
+  `),
+
+  // Inserir upload
+  insertUpload: db.prepare(`
+    INSERT INTO uploads (filename, total_records, unique_dates, upload_date)
+    VALUES (?, ?, ?, ?)
+  `),
+
+  // Buscar últimos uploads
+  getRecentUploads: db.prepare(`
+    SELECT * FROM uploads 
+    ORDER BY created_at DESC 
+    LIMIT 5
+  `),
+
+  // Inserir avaliação individual
+  insertEvaluation: db.prepare(`
+    INSERT INTO evaluations (date, client_id, user_name, score, plan, comment, category, upload_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `),
+
+  // Buscar avaliações por período
+  getEvaluationsByPeriod: db.prepare(`
+    SELECT * FROM evaluations 
+    WHERE date >= date('now', ?)
+    ORDER BY date DESC
+  `),
+
+  // Estatísticas gerais
+  getStats: db.prepare(`
+    SELECT 
+      COUNT(*) as total_evaluations,
+      COUNT(DISTINCT date) as unique_dates,
+      COUNT(DISTINCT client_id) as unique_clients,
+      AVG(score) as average_score,
+      MIN(date) as first_date,
+      MAX(date) as last_date
+    FROM evaluations
+  `),
+
+  // Limpar histórico
+  clearHistory: db.prepare(`DELETE FROM nps_history`),
+  
+  // Limpar avaliações
+  clearEvaluations: db.prepare(`DELETE FROM evaluations`),
+};
+
+// Função para fazer backup do banco
+function createBackup() {
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupFile = path.join(DATA_DIR, `backup-${timestamp}.db`);
+    
+    // Copiar arquivo do banco
+    fs.copyFileSync(DB_FILE, backupFile);
+    console.log(`📦 Backup criado: ${backupFile}`);
+
+    // Manter apenas os últimos 5 backups
+    const backups = fs
+      .readdirSync(DATA_DIR)
+      .filter((f) => f.startsWith("backup-") && f.endsWith(".db"))
+      .sort()
+      .reverse();
+
+    if (backups.length > 5) {
+      backups.slice(5).forEach((file) => {
+        fs.unlinkSync(path.join(DATA_DIR, file));
+        console.log(`🗑️  Backup antigo removido: ${file}`);
+      });
+    }
+  } catch (error) {
+    console.error("❌ Erro ao criar backup:", error);
+  }
+}
+
+// Backup automático a cada 24 horas
+setInterval(createBackup, 24 * 60 * 60 * 1000);
+
+// ============================================
+// FIM DA CONFIGURAÇÃO SQLITE
+// ============================================
 
 // Middlewares
 app.use(
@@ -21,15 +206,11 @@ app.use(
 
 app.use(express.json());
 
-// Servir arquivos estáticos em produção
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "../build")));
 }
 
-// Armazenamento em memória para histórico de uploads
-let npsHistory = [];
-
-// Configuração do multer para upload de arquivos
+// Configuração do multer
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, "uploads");
@@ -61,7 +242,7 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: 5 * 1024 * 1024,
   },
 });
 
@@ -69,27 +250,23 @@ const upload = multer({
 function parseDate(dateString) {
   if (!dateString) return null;
 
-  // Remove espaços e normaliza separadores
   const normalized = dateString.trim().replace(/[\/\-]/g, "-");
 
-  // Tenta vários formatos comuns
   const formats = [
-    /^(\d{4})-(\d{2})-(\d{2})/, // YYYY-MM-DD
-    /^(\d{2})-(\d{2})-(\d{4})/, // DD-MM-YYYY
-    /^(\d{2})-(\d{2})-(\d{2})/, // DD-MM-YY
+    /^(\d{4})-(\d{2})-(\d{2})/,
+    /^(\d{2})-(\d{2})-(\d{4})/,
+    /^(\d{2})-(\d{2})-(\d{2})/,
   ];
 
   for (const format of formats) {
     const match = normalized.match(format);
     if (match) {
       if (match[1].length === 4) {
-        // YYYY-MM-DD
         const date = new Date(match[1], match[2] - 1, match[3]);
         if (!isNaN(date.getTime())) {
           return date.toISOString().split("T")[0];
         }
       } else {
-        // DD-MM-YYYY ou DD-MM-YY
         let year = match[3];
         if (year.length === 2) {
           year = (parseInt(year) > 50 ? "19" : "20") + year;
@@ -102,7 +279,6 @@ function parseDate(dateString) {
     }
   }
 
-  // Se falhar, usa data atual
   return new Date().toISOString().split("T")[0];
 }
 
@@ -249,8 +425,8 @@ function generateInsights(npsResults, npsResultsByPlan) {
   return insights;
 }
 
-// Função NOVA para adicionar ao histórico usando datas do CSV
-function addToHistoryFromCSV(csvData) {
+// Função para salvar no banco de dados
+function saveToDatabase(csvData, uploadId) {
   // Agrupar dados por data
   const dataByDate = {};
 
@@ -262,55 +438,51 @@ function addToHistoryFromCSV(csvData) {
     dataByDate[date].push(row);
   });
 
-  console.log(`📊 Datas encontradas no CSV: ${Object.keys(dataByDate).length}`);
+  console.log(`📊 Salvando ${Object.keys(dataByDate).length} datas no banco`);
 
-  // Calcular NPS por plano para cada data
-  Object.entries(dataByDate).forEach(([date, dateData]) => {
-    const npsResultsByPlan = calculateNPSByPlan(dateData);
+  // Usar transação para performance
+  const insertMany = db.transaction((data) => {
+    data.forEach(({ date, dateData }) => {
+      const npsResultsByPlan = calculateNPSByPlan(dateData);
 
-    const historyEntry = {
-      date: date,
-      timestamp: new Date(date).toISOString(),
-      FREE: npsResultsByPlan["FREE"]?.nps || 0,
-      LITE: npsResultsByPlan["LITE"]?.nps || 0,
-      PRO: npsResultsByPlan["PRO"]?.nps || 0,
-      totalRecords: dateData.length,
-    };
+      // Salvar histórico NPS
+      dbQueries.upsertHistory.run(
+        date,
+        new Date(date).toISOString(),
+        npsResultsByPlan["FREE"]?.nps || 0,
+        npsResultsByPlan["LITE"]?.nps || 0,
+        npsResultsByPlan["PRO"]?.nps || 0,
+        dateData.length
+      );
 
-    // Verificar se já existe entrada para esta data
-    const existingIndex = npsHistory.findIndex((entry) => entry.date === date);
-
-    if (existingIndex !== -1) {
-      // Atualizar entrada existente (somar registros)
-      const existing = npsHistory[existingIndex];
-      const combinedData = [
-        ...dataByDate[date],
-        ...csvData.filter((r) => parseDate(r.data) === date),
-      ];
-      const combinedNPSByPlan = calculateNPSByPlan(combinedData);
-
-      npsHistory[existingIndex] = {
-        date: date,
-        timestamp: new Date(date).toISOString(),
-        FREE: combinedNPSByPlan["FREE"]?.nps || 0,
-        LITE: combinedNPSByPlan["LITE"]?.nps || 0,
-        PRO: combinedNPSByPlan["PRO"]?.nps || 0,
-        totalRecords: combinedData.length,
-      };
-    } else {
-      // Adicionar nova entrada
-      npsHistory.push(historyEntry);
-    }
+      // Salvar avaliações individuais
+      dateData.forEach((row) => {
+        const nota = Number(row.nota);
+        const categoria = nota >= 9 ? "Promotor" : nota >= 7 ? "Neutro" : "Detrator";
+        
+        dbQueries.insertEvaluation.run(
+          date,
+          row.cliente || null,
+          row.usuario || null,
+          nota,
+          row.plano,
+          row.comentario || null,
+          categoria,
+          uploadId
+        );
+      });
+    });
   });
 
-  // Ordenar por data (do mais antigo para o mais recente)
-  npsHistory = npsHistory.sort((a, b) => new Date(a.date) - new Date(b.date));
+  // Executar transação
+  const dataToInsert = Object.entries(dataByDate).map(([date, dateData]) => ({
+    date,
+    dateData,
+  }));
 
-  console.log(`📊 Histórico atualizado: ${npsHistory.length} entradas únicas`);
-  console.log(
-    `📊 Datas no histórico:`,
-    npsHistory.map((h) => h.date)
-  );
+  insertMany(dataToInsert);
+
+  console.log(`✅ Dados salvos no banco de dados`);
 }
 
 // Rota de upload e processamento do CSV
@@ -327,7 +499,6 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
     const csvData = [];
 
     console.log(`📄 Processando arquivo: ${req.file.originalname}`);
-    console.log(`📊 Tamanho: ${(req.file.size / 1024).toFixed(2)} KB`);
 
     fs.createReadStream(filePath)
       .pipe(
@@ -336,11 +507,11 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
           skip_empty_lines: true,
           delimiter: ",",
           trim: true,
-          relax_column_count: true, // Permite colunas irregulares
-          quote: '"', // Reconhece aspas duplas
-          escape: '"', // Permite escapar aspas
-          relax_quotes: true, // Mais flexível com aspas
-          cast: false, // Não tenta converter tipos automaticamente
+          relax_column_count: true,
+          quote: '"',
+          escape: '"',
+          relax_quotes: true,
+          cast: false,
         })
       )
       .on("data", (row) => {
@@ -351,7 +522,6 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
             cleanRow[cleanKey] = row[key]?.trim();
           });
 
-          // Juntar comentário se foi quebrado em várias colunas
           let comentario = cleanRow.comentario || "";
           const extraColumns = Object.keys(row).filter(
             (k) =>
@@ -365,17 +535,7 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
               ].includes(k.trim().toLowerCase())
           );
           if (extraColumns.length > 0) {
-            // Provavelmente o comentário foi quebrado
             const allValues = Object.values(row);
-            const knownFields = [
-              cleanRow.data,
-              cleanRow.cliente,
-              cleanRow.usuario,
-              cleanRow.nota,
-            ];
-            const plano = allValues[allValues.length - 1]; // Plano sempre é o último
-
-            // Pegar tudo entre nota e plano como comentário
             const comentarioParts = allValues.slice(4, allValues.length - 1);
             comentario = comentarioParts.join(",").trim();
           }
@@ -419,7 +579,7 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
             return res.status(400).json({
               success: false,
               error:
-                'Nenhum registro válido encontrado no arquivo. Verifique se os campos "nota" e "plano" estão corretos.',
+                'Nenhum registro válido encontrado no arquivo.',
             });
           }
 
@@ -427,8 +587,16 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
           const npsResultsByPlan = calculateNPSByPlan(csvData);
           const insights = generateInsights(npsResults, npsResultsByPlan);
 
-          // NOVA FUNÇÃO: Adicionar ao histórico usando datas do CSV
-          addToHistoryFromCSV(csvData);
+          // Registrar upload no banco
+          const uploadInfo = dbQueries.insertUpload.run(
+            req.file.originalname,
+            csvData.length,
+            [...new Set(csvData.map((r) => r.data))].length,
+            new Date().toISOString()
+          );
+
+          // Salvar todos os dados no banco
+          saveToDatabase(csvData, uploadInfo.lastInsertRowid);
 
           const scoreDistribution = {};
           for (let i = 0; i <= 10; i++) scoreDistribution[i] = 0;
@@ -471,15 +639,6 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
             }
           });
 
-          console.log(`📈 NPS Geral: ${npsResults.nps}`);
-          console.log(
-            `👥 Distribuição por plano:`,
-            Object.keys(planPercentages)
-          );
-          console.log(`📅 Datas processadas:`, [
-            ...new Set(csvData.map((r) => r.data)),
-          ]);
-
           res.json({
             success: true,
             data: {
@@ -511,8 +670,7 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
         console.error("❌ Erro na leitura do CSV:", error);
         res.status(400).json({
           success: false,
-          error:
-            "Erro ao processar arquivo CSV. Verifique se o arquivo está no formato correto e use codificação UTF-8.",
+          error: "Erro ao processar arquivo CSV.",
         });
       });
   } catch (error) {
@@ -524,153 +682,126 @@ app.post("/api/upload-csv", upload.single("csvFile"), async (req, res) => {
   }
 });
 
-// Função para agrupar dados por trimestre
-function aggregateByQuarter(history) {
-  const quarterData = {};
-
-  history.forEach((entry) => {
-    const date = new Date(entry.date);
-    const year = date.getFullYear();
-    const month = date.getMonth() + 1; // 1-12
-    const quarter = Math.ceil(month / 3);
-    const quarterKey = `Q${quarter} ${year}`;
-
-    if (!quarterData[quarterKey]) {
-      quarterData[quarterKey] = {
-        date: quarterKey,
-        displayDate: quarterKey,
-        FREE: [],
-        LITE: [],
-        PRO: [],
-        totalRecords: 0,
-        firstDate: entry.date,
-        lastDate: entry.date,
-      };
-    }
-
-    // Acumular valores de NPS
-    if (entry.FREE !== 0) quarterData[quarterKey].FREE.push(entry.FREE);
-    if (entry.LITE !== 0) quarterData[quarterKey].LITE.push(entry.LITE);
-    if (entry.PRO !== 0) quarterData[quarterKey].PRO.push(entry.PRO);
-    quarterData[quarterKey].totalRecords += entry.totalRecords;
-
-    // Atualizar última data
-    if (new Date(entry.date) > new Date(quarterData[quarterKey].lastDate)) {
-      quarterData[quarterKey].lastDate = entry.date;
-    }
-  });
-
-  // Calcular médias
-  return Object.values(quarterData)
-    .map((q) => ({
-      date: q.date,
-      displayDate: q.displayDate,
-      FREE:
-        q.FREE.length > 0
-          ? Math.round(q.FREE.reduce((a, b) => a + b, 0) / q.FREE.length)
-          : 0,
-      LITE:
-        q.LITE.length > 0
-          ? Math.round(q.LITE.reduce((a, b) => a + b, 0) / q.LITE.length)
-          : 0,
-      PRO:
-        q.PRO.length > 0
-          ? Math.round(q.PRO.reduce((a, b) => a + b, 0) / q.PRO.length)
-          : 0,
-      totalRecords: q.totalRecords,
-      timestamp: q.firstDate,
-    }))
-    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-}
-
-// Rota para obter histórico NPS (com filtro de período e agregação)
+// Rota para obter histórico NPS
 app.get("/api/nps-history", (req, res) => {
-  const { period, aggregate } = req.query;
-  let filteredHistory = [...npsHistory];
+  try {
+    const { period } = req.query;
+    let history;
 
-  console.log(
-    `📊 Requisição de histórico recebida. Período: ${
-      period || "all"
-    }, Agregação: ${aggregate || "none"}`
-  );
-  console.log(`📊 Total de entradas no histórico: ${npsHistory.length}`);
+    if (period && period !== "all") {
+      const periodMap = {
+        "7d": "-7 days",
+        "30d": "-30 days",
+        "90d": "-90 days",
+      };
 
-  if (period && period !== "all") {
-    const now = new Date();
-    let daysToSubtract = 0;
-
-    switch (period) {
-      case "7d":
-        daysToSubtract = 7;
-        break;
-      case "30d":
-        daysToSubtract = 30;
-        break;
-      case "90d":
-        daysToSubtract = 90;
-        break;
-      default:
-        daysToSubtract = 0;
+      history = dbQueries.getHistoryByPeriod.all(periodMap[period] || "-30 days");
+    } else {
+      history = dbQueries.getHistory.all();
     }
 
-    if (daysToSubtract > 0) {
-      const cutoffDate = new Date(
-        now.getTime() - daysToSubtract * 24 * 60 * 60 * 1000
-      );
-      filteredHistory = filteredHistory.filter(
-        (entry) => new Date(entry.date) >= cutoffDate
-      );
-      console.log(
-        `📊 Histórico filtrado: ${filteredHistory.length} entradas após ${daysToSubtract} dias`
-      );
-    }
+    // Formatar resposta
+    const formattedHistory = history.map((entry) => ({
+      date: entry.date,
+      displayDate: entry.date.split("-").reverse().join("/"),
+      FREE: entry.nps_free,
+      LITE: entry.nps_lite,
+      PRO: entry.nps_pro,
+      totalRecords: entry.total_records,
+      timestamp: entry.timestamp,
+    }));
+
+    res.json({
+      success: true,
+      data: formattedHistory,
+      totalEntries: formattedHistory.length,
+      period: period || "all",
+    });
+  } catch (error) {
+    console.error("❌ Erro ao buscar histórico:", error);
+    res.status(500).json({
+      success: false,
+      error: "Erro ao buscar histórico",
+    });
   }
-
-  // Aplicar agregação trimestral se solicitado
-  if (aggregate === "quarterly" && filteredHistory.length > 0) {
-    filteredHistory = aggregateByQuarter(filteredHistory);
-    console.log(
-      `📊 Agregação trimestral aplicada: ${filteredHistory.length} trimestres`
-    );
-  }
-
-  console.log(
-    `📊 Enviando histórico:`,
-    filteredHistory.map((h) => ({
-      date: h.date || h.displayDate,
-      records: h.totalRecords,
-    }))
-  );
-
-  res.json({
-    success: true,
-    data: filteredHistory,
-    totalEntries: filteredHistory.length,
-    period: period || "all",
-    aggregated: aggregate === "quarterly",
-  });
 });
 
-// Rota para limpar histórico (útil para testes)
-app.delete("/api/nps-history", (req, res) => {
-  npsHistory = [];
-  console.log("🗑️ Histórico limpo");
+// Rota para estatísticas gerais
+app.get("/api/stats", (req, res) => {
+  try {
+    const stats = dbQueries.getStats.get();
+    const recentUploads = dbQueries.getRecentUploads.all();
 
-  res.json({
-    success: true,
-    message: "Histórico limpo com sucesso",
-  });
+    res.json({
+      success: true,
+      data: {
+        stats,
+        recentUploads,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Erro ao buscar estatísticas:", error);
+    res.status(500).json({
+      success: false,
+      error: "Erro ao buscar estatísticas",
+    });
+  }
+});
+
+// Rota para limpar histórico
+app.delete("/api/nps-history", (req, res) => {
+  try {
+    // Fazer backup antes de limpar
+    createBackup();
+
+    dbQueries.clearHistory.run();
+    dbQueries.clearEvaluations.run();
+
+    console.log("🗑️ Histórico limpo");
+
+    res.json({
+      success: true,
+      message: "Histórico limpo com sucesso",
+    });
+  } catch (error) {
+    console.error("❌ Erro ao limpar histórico:", error);
+    res.status(500).json({
+      success: false,
+      error: "Erro ao limpar histórico",
+    });
+  }
 });
 
 // Rota de saúde da API
 app.get("/api/health", (req, res) => {
-  res.json({
-    status: "OK",
-    timestamp: new Date().toISOString(),
-    uptime: Math.round(process.uptime()),
-    environment: process.env.NODE_ENV || "development",
-    historyEntries: npsHistory.length,
-  });
+  try {
+    const stats = dbQueries.getStats.get();
+
+    res.json({
+      status: "OK",
+      timestamp: new Date().toISOString(),
+      uptime: Math.round(process.uptime()),
+      environment: process.env.NODE_ENV || "development",
+      database: {
+        type: "SQLite",
+        file: DB_FILE,
+        totalEvaluations: stats.total_evaluations || 0,
+        uniqueDates: stats.unique_dates || 0,
+        uniqueClients: stats.unique_clients || 0,
+      },
+    });
+  } catch (error) {
+    res.json({
+      status: "OK",
+      timestamp: new Date().toISOString(),
+      uptime: Math.round(process.uptime()),
+      environment: process.env.NODE_ENV || "development",
+      database: {
+        type: "SQLite",
+        file: DB_FILE,
+      },
+    });
+  }
 });
 
 // Servir o frontend React em produção
@@ -691,12 +822,6 @@ app.use((error, req, res, next) => {
         error: "Arquivo muito grande. Limite máximo: 5MB",
       });
     }
-    if (error.code === "LIMIT_UNEXPECTED_FILE") {
-      return res.status(400).json({
-        success: false,
-        error: "Campo de arquivo não esperado",
-      });
-    }
   }
 
   res.status(500).json({
@@ -705,7 +830,7 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Rota 404 para rotas não encontradas da API
+// Rota 404
 app.use((req, res, next) => {
   if (req.path.startsWith("/api/") && !res.headersSent) {
     res.status(404).json({
@@ -722,22 +847,23 @@ const server = app.listen(PORT, () => {
   console.log("🚀 ===================================");
   console.log(`🚀 Servidor NPS Backend rodando na porta ${PORT}`);
   console.log(`📊 API disponível em: http://localhost:${PORT}/api`);
-  console.log(`🏥 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`📈 Histórico NPS: http://localhost:${PORT}/api/nps-history`);
+  console.log(`💾 Banco de dados: SQLite (${DB_FILE})`);
   console.log(`🌍 Ambiente: ${process.env.NODE_ENV || "development"}`);
   console.log("🚀 ===================================");
 });
 
 // Tratamento de encerramento
 process.on("SIGTERM", () => {
-  console.log("🛑 SIGTERM recebido. Encerrando servidor...");
+  console.log("🛑 SIGTERM recebido. Fechando banco...");
+  db.close();
   server.close(() => {
     console.log("✅ Servidor encerrado com sucesso.");
   });
 });
 
 process.on("SIGINT", () => {
-  console.log("🛑 SIGINT recebido. Encerrando servidor...");
+  console.log("🛑 SIGINT recebido. Fechando banco...");
+  db.close();
   server.close(() => {
     console.log("✅ Servidor encerrado com sucesso.");
   });
