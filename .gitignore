@@ -1,17 +1,15 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
+# Dependências
+node_modules/
 /.pnp
 .pnp.js
 
-# testing
+# Testes
 /coverage
 
-# production
+# Produção
 /build
 
-# misc
+# Diversos
 .DS_Store
 .env.local
 .env.development.local
@@ -21,3 +19,22 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# ========================================
+# BACKEND - Dados e Uploads
+# ========================================
+
+# Banco de dados SQLite
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
+
+# Backups do banco
+server/data/backup-*.db
+
+# Uploads temporários
+server/uploads/*
+
+# Manter estrutura de pastas no Git
+!server/data/.gitkeep
+!server/uploads/.gitkeep
